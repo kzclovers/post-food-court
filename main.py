@@ -1915,7 +1915,7 @@ class Game:
             ("1. Learn New Fallacies", "Each level introduces three new fallacies. Add them to your dictionary to use as reference during the trial."),
             ("2. Warm-Up Round", "Practice identifying the new fallacies with no timer and no health damage."),
             ("3. Official Kitchen Trial", "Read the opponent's argument and click the ingredient with the corresponding fallacy before the timer expires!"),
-            ("4. Win the Debate", "Correct answers damage the opponent; wrong answers or running out of time damage you. Complete the first level to unlock Infinite Mode!"),
+            ("4. Win the Trail", "Correct answers damage the opponent; wrong answers or running out of time damage you. Complete the first level to unlock Infinite Mode!"),
         ]
 
         y = panel.top + 94
