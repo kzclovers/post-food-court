@@ -1912,10 +1912,10 @@ class Game:
         pygame.draw.line(surf, LINE, (panel.left + 40, panel.top + 78), (panel.right - 40, panel.top + 78), 2)
 
         steps = [
-            ("1. Learn New Fallacies", "Each level introduces 3 new fallacy cards. Add all three to your dictionary to prepare for battle."),
-            ("2. Warm-Up Round", "Practice identifying the new fallacies with no timer and no health damage until you feel ready."),
-            ("3. Official Kitchen Trial", "Read the opponent's claim and click the floating ingredient paper naming the correct fallacy before the 10s timer expires!"),
-            ("4. Win the Debate", "Correct answers damage the opponent; wrong answers or timeouts damage you. Defeat the enemy to unlock Infinite Mode!"),
+            ("1. Learn New Fallacies", "Each level introduces three new fallacies. Add them to your dictionary to use as reference during the trial."),
+            ("2. Warm-Up Round", "Practice identifying the new fallacies with no timer and no health damage."),
+            ("3. Official Kitchen Trial", "Read the opponent's argument and click the ingredient with the corresponding fallacy before the timer expires!"),
+            ("4. Win the Debate", "Correct answers damage the opponent; wrong answers or running out of time damage you. Complete the first level to unlock Infinite Mode!"),
         ]
 
         y = panel.top + 94
