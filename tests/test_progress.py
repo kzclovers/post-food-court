@@ -44,10 +44,10 @@ class ProgressPersistenceTests(unittest.TestCase):
 
     def test_infinite_best_only_updates_on_improvement(self):
         p = Progress()
-        self.assertTrue(p.record_infinite_result(1, 12.5))
-        self.assertFalse(p.record_infinite_result(1, 5.0))
-        self.assertTrue(p.record_infinite_result(1, 20.0))
-        self.assertEqual(Progress().infinite_best_seconds[1], 20.0)
+        self.assertTrue(p.record_infinite_result(1, 12))
+        self.assertFalse(p.record_infinite_result(1, 5))
+        self.assertTrue(p.record_infinite_result(1, 20))
+        self.assertEqual(Progress().infinite_best_correct[1], 20)
 
     def test_reset_clears_everything_and_persists(self):
         p = Progress()

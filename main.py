@@ -146,6 +146,17 @@ DEV_PASSWORD = "dev67"
 HOVER_SCALE = 1.05
 MENU_LOGO_WIDTH = 380
 MENU_CARD_RECT = pygame.Rect(480, 316, 320, 300)
+# Where _draw_menu puts the logo, and the startup splash that glides into it.
+MENU_LOGO_CENTER = (VIRTUAL_W // 2, 240)
+INTRO_LOGO_WIDTH = 640
+INTRO_HOLD_SECONDS = 2.0
+INTRO_MOVE_SECONDS = 0.6
+INFO_BUTTON_RECT = pygame.Rect(SETTINGS_PAPER_RECT.left + 16, SETTINGS_PAPER_RECT.top + 16, 40, 40)
+CREDITS_LINES = (
+    ("Developers", "Lina, Sophii, Ryan, Kenzie"),
+    ("Audio", "Courtesy of the YouTube Studio Audio Library"),
+    ("Event", "DubHacks 2026 Project"),
+)
 SETTINGS_ROW_RECTS = [pygame.Rect(472, 250, 336, 50), pygame.Rect(472, 318, 336, 50)]
 # Slider track per settings row: the label sits above, the track below it.
 SETTINGS_SLIDER_RECTS = [pygame.Rect(r.left + 8, r.bottom - 12, r.width - 16, 8) for r in SETTINGS_ROW_RECTS]
@@ -503,6 +514,9 @@ def draw_icon(surf: pygame.Surface, name: str, center: tuple[int, int], size: in
         right.topleft = (cx, left.top)
         pygame.draw.rect(surf, color, left, w, border_radius=2)
         pygame.draw.rect(surf, color, right, w, border_radius=2)
+    elif name == "info":
+        pygame.draw.circle(surf, color, (cx, round(cy - s * 0.3)), max(2, round(s * 0.09)))
+        pygame.draw.line(surf, color, (cx, cy - s * 0.08), (cx, cy + s * 0.38), w + 1)
     elif name == "play":
         pygame.draw.polygon(surf, color, [
             (cx - s * 0.28, cy - s * 0.36), (cx + s * 0.38, cy), (cx - s * 0.28, cy + s * 0.36)
@@ -814,9 +828,9 @@ class Game:
         self.toasts: list[list] = []
         self.gavel_timer = 0.0
         self.gavel_target = "MENU"
-        self.infinite_start_ms = 0
-        self.infinite_survived = 0.0
+        self.infinite_final_correct = 0
         self.infinite_is_best = False
+        self.intro_t = 0.0
         self.dialogue_phase = "DONE"
         self.dialogue_timer = 0.0
         self.dialogue_speaker = ""
@@ -843,7 +857,7 @@ class Game:
             for name in ("bread", "lettuce", "cheese", "bacon")
         ]
         self.bg_faded = cover_scale(
-            load_image("background_faded.png", (VIRTUAL_W, VIRTUAL_H - 200  ), (90, 60, 40)), (VIRTUAL_W, VIRTUAL_H)
+            load_image("background_faded.png", (VIRTUAL_W, VIRTUAL_H - 200  ), (90, 60, 40)), (VIRTUAL_W, VIRTUAL_H), anchor_y=0.0
         )
         self.logo = load_image("LOGO_food_court.png", (600, 460), (214, 122, 54))
         self.logo_small = pygame.transform.smoothscale(
@@ -998,7 +1012,6 @@ class Game:
         self.infinite = True
         self.phase = "ROUND"
         self.fallacy_ids = self._infinite_fallacy_ids()
-        self.infinite_start_ms = pygame.time.get_ticks()
         self.next_question()
 
     def _dictionary_ids(self) -> set[int]:
@@ -1263,9 +1276,8 @@ class Game:
         self.audio.play_sfx("knife_hit")
 
     def finish_infinite(self) -> None:
-        survived = (pygame.time.get_ticks() - self.infinite_start_ms) / 1000.0
-        self.infinite_survived = survived
-        self.infinite_is_best = self.progress.record_infinite_result(INFINITE_SAVE_KEY, survived)
+        self.infinite_final_correct = self.infinite_correct
+        self.infinite_is_best = self.progress.record_infinite_result(INFINITE_SAVE_KEY, self.infinite_correct)
         self.start_gavel("INFINITE_RESULTS")
 
     def reset_game(self) -> None:
@@ -1288,20 +1300,19 @@ class Game:
     def _exit_level(self) -> None:
         """Exit Game always returns to the levels page without a result popup.
 
-        Infinite mode still saves the run's time if it is a new best.
+        Infinite mode still saves the run's score if it is a new best.
         """
         self.paused = False
         self.papers = []
         self.review_fallacy_id = None
         if self.infinite:
-            survived = (pygame.time.get_ticks() - self.infinite_start_ms) / 1000.0
-            self.progress.record_infinite_result(INFINITE_SAVE_KEY, survived)
+            self.progress.record_infinite_result(INFINITE_SAVE_KEY, self.infinite_correct)
         self.state = "LEVEL_SELECT"
 
     # -- update ---------------------------------------------------
 
     def _desired_music(self) -> str | None:
-        state = self.pre_settings_state if self.state == "SETTINGS" else self.state
+        state = self.pre_settings_state if self.state in ("SETTINGS", "CREDITS") else self.state
         if state in LEVEL_MUSIC_STATES:
             return "infinite" if self.infinite else LEVEL_MUSIC.get(self.level, "main")
         return "main"
@@ -1310,6 +1321,12 @@ class Game:
         track = self._desired_music()
         if track is not None:
             self.audio.play_music(track)
+        self.audio.update(dt)
+        if self.state == "INTRO":
+            # Cap the step so a slow first frame cannot skip the splash.
+            self.intro_t += min(dt, 0.1)
+            if self.intro_t >= INTRO_HOLD_SECONDS + INTRO_MOVE_SECONDS:
+                self.state = "MENU"
         if self.state in ("GAMEPLAY", "FEEDBACK", "GAVEL"):
             target_camera_y = (
                 GAMEPLAY_PAN_PIXELS if self.dialogue_speaker == "Judge"
@@ -1428,13 +1445,9 @@ class Game:
                                        style="icon", icon="gear"))
 
         if self.state == "MENU":
-            # Dirty recipe book card layout with todo-list checklist buttons
-            cx = MENU_CARD_RECT.centerx
-            top = MENU_CARD_RECT.top + 60
-            self.buttons.append(Button(pygame.Rect(cx - 130, top, 260, 50), "Play", self._open_level_select, style="pill", radius=10))
-            self.buttons.append(Button(pygame.Rect(cx - 130, top + 62, 260, 50), "Instructions", self._open_how_to_play, style="todo", radius=10))
-            self.buttons.append(Button(pygame.Rect(cx - 130, top + 124, 260, 50), "Dictionary", self._open_dictionary, style="todo", radius=10))
-            self.buttons.append(Button(pygame.Rect(cx - 130, top + 186, 260, 50), "Settings", self._open_settings, style="todo", radius=10))
+            self.buttons.extend(self._menu_buttons())
+        elif self.state == "CREDITS":
+            self.buttons.append(Button(RETURN_BUTTON_RECT, "Back", self._close_credits, style="secondary", radius=12))
         elif self.state == "HOW_TO_PLAY":
             self.buttons.append(Button(RETURN_BUTTON_RECT, "Back", self._go_menu, style="secondary", radius=12))
         elif self.state == "LEVEL_SELECT":
@@ -1499,9 +1512,21 @@ class Game:
             hit = self._fitted_rect(self.dictionary_cards[fid], slot)
             self.buttons.append(Button(hit, "", lambda fid=fid: self._open_card(fid), style="hidden"))
 
+    def _menu_buttons(self) -> list[Button]:
+        # Dirty recipe book card layout with todo-list checklist buttons
+        cx = MENU_CARD_RECT.centerx
+        top = MENU_CARD_RECT.top + 60
+        return [
+            Button(pygame.Rect(cx - 130, top, 260, 50), "Play", self._open_level_select, style="pill", radius=10),
+            Button(pygame.Rect(cx - 130, top + 62, 260, 50), "Instructions", self._open_how_to_play, style="todo", radius=10),
+            Button(pygame.Rect(cx - 130, top + 124, 260, 50), "Dictionary", self._open_dictionary, style="todo", radius=10),
+            Button(pygame.Rect(cx - 130, top + 186, 260, 50), "Settings", self._open_settings, style="todo", radius=10),
+        ]
+
     def _layout_settings_buttons(self) -> None:
         self.buttons.append(Button(RETURN_BUTTON_RECT, "Back", self._close_settings,
                                    style="secondary", radius=12))
+        self.buttons.append(Button(INFO_BUTTON_RECT, "", self._open_credits, style="icon", icon="info"))
         self.buttons.append(Button(DEV_INPUT_RECT, "", self._focus_dev_input, style="hidden"))
         if self.dev_unlocked:
             self.buttons.append(Button(DEV_SWITCH_RECT, "", self._toggle_dev_mode, style="hidden"))
@@ -1588,6 +1613,19 @@ class Game:
         self.show_reset_confirm = False
         self.dev_input_active = False
         self.state = self.pre_settings_state
+
+    def _open_credits(self) -> None:
+        self.show_reset_confirm = False
+        self.dev_input_active = False
+        self.state = "CREDITS"
+
+    def _close_credits(self) -> None:
+        self.state = "SETTINGS"
+
+    def start_intro(self) -> None:
+        """Startup splash: a big centered logo that glides into the menu."""
+        self.intro_t = 0.0
+        self.state = "INTRO"
 
     def _focus_dev_input(self) -> None:
         self.dev_input_active = True
@@ -1733,7 +1771,7 @@ class Game:
             self._draw_ui_buttons(surf)
             return
 
-        faded_states = ("MENU", "HOW_TO_PLAY", "LEVEL_SELECT", "SETTINGS",
+        faded_states = ("INTRO", "MENU", "HOW_TO_PLAY", "LEVEL_SELECT", "SETTINGS", "CREDITS",
                         "LEVEL_COMPLETE", "LEVEL_FAILED", "INFINITE_RESULTS")
         gameplay_states = ("GAMEPLAY", "FEEDBACK", "GAVEL")
         if self.state in gameplay_states:
@@ -1745,8 +1783,12 @@ class Game:
             logo = self.logo_small_faded if self.state == "LEVEL_SELECT" else self.logo_small
             surf.blit(logo, logo.get_rect(bottomright=(VIRTUAL_W - 24, VIRTUAL_H - 16)))
 
-        if self.state == "MENU":
+        if self.state == "INTRO":
+            self._draw_intro(surf)
+        elif self.state == "MENU":
             self._draw_menu(surf)
+        elif self.state == "CREDITS":
+            self._draw_credits(surf)
         elif self.state == "HOW_TO_PLAY":
             self._draw_how_to_play(surf)
         elif self.state == "LEVEL_SELECT":
@@ -1782,8 +1824,8 @@ class Game:
     def _is_hovered(self, rect: pygame.Rect) -> bool:
         return rect.collidepoint(self.mouse_pos)
 
-    def _draw_ui_buttons(self, surf: pygame.Surface) -> None:
-        for button in self.buttons:
+    def _draw_ui_buttons(self, surf: pygame.Surface, buttons: list[Button] | None = None) -> None:
+        for button in self.buttons if buttons is None else buttons:
             button.hovered = button.style != "hidden" and self._is_hovered(button.rect)
             if button.style == "icon":
                 font = self.fonts["body_bold"]
@@ -1806,7 +1848,39 @@ class Game:
         draw_card(surf, PAUSE_POPUP_RECT, radius=RADIUS_PANEL)
         draw_text(surf, self.fonts["title_bold"], "PAUSED", PRIMARY, center=(PAUSE_POPUP_RECT.centerx, PAUSE_POPUP_RECT.top + 64))
 
-    def _draw_menu(self, surf: pygame.Surface) -> None:
+    def _draw_intro(self, surf: pygame.Surface) -> None:
+        move = max(0.0, min(1.0, (self.intro_t - INTRO_HOLD_SECONDS) / INTRO_MOVE_SECONDS))
+        ease = 1 - (1 - move) ** 3
+        if move > 0:
+            # The menu fades in underneath while the logo glides into place.
+            layer = pygame.Surface((VIRTUAL_W, VIRTUAL_H), pygame.SRCALPHA)
+            self._draw_menu(layer, draw_logo=False)
+            self._draw_ui_buttons(layer, self._menu_buttons())
+            layer.set_alpha(round(255 * ease))
+            surf.blit(layer, (0, 0))
+        logo_w = round(INTRO_LOGO_WIDTH + (MENU_LOGO_WIDTH - INTRO_LOGO_WIDTH) * ease)
+        logo_h = round(logo_w * self.logo.get_height() / self.logo.get_width())
+        center = (
+            round(VIRTUAL_W // 2 + (MENU_LOGO_CENTER[0] - VIRTUAL_W // 2) * ease),
+            round(VIRTUAL_H // 2 + (MENU_LOGO_CENTER[1] - VIRTUAL_H // 2) * ease),
+        )
+        logo = pygame.transform.smoothscale(self.logo, (logo_w, logo_h))
+        surf.blit(logo, logo.get_rect(center=center))
+
+    def _draw_credits(self, surf: pygame.Surface) -> None:
+        paper = SETTINGS_PAPER_RECT
+        draw_card(surf, paper, radius=RADIUS_PANEL)
+        draw_text(surf, self.fonts["title_bold"], "Information", INK, center=(paper.centerx, paper.top + 70))
+        pygame.draw.line(surf, LINE, (paper.left + 36, paper.top + 110), (paper.right - 36, paper.top + 110), 1)
+        y = paper.top + 150
+        for heading, text in CREDITS_LINES:
+            draw_text(surf, self.fonts["body_bold"], heading, PRIMARY, center=(paper.centerx, y))
+            for line in wrap_text(text, self.fonts["small"], paper.width - 72):
+                y += 30
+                draw_text(surf, self.fonts["small"], line, INK, center=(paper.centerx, y))
+            y += 64
+
+    def _draw_menu(self, surf: pygame.Surface, draw_logo: bool = True) -> None:
         # Dirty recipe book overlay behind the logo and menu settings
         book_rect = pygame.Rect(VIRTUAL_W // 2 - 250, 40, 500, 630)
         draw_shadow(surf, book_rect, radius=20, offset=(0, 6), alpha=90, blur=12)
@@ -1827,8 +1901,9 @@ class Game:
         # Main Logo scaled nicely in the recipe book
         logo_w = MENU_LOGO_WIDTH
         logo_h = int(logo_w * self.logo.get_height() / self.logo.get_width())
-        logo_scaled = pygame.transform.smoothscale(self.logo, (logo_w, logo_h))
-        surf.blit(logo_scaled, logo_scaled.get_rect(center=(book_rect.centerx, book_rect.top + 200)))
+        if draw_logo:
+            logo_scaled = pygame.transform.smoothscale(self.logo, (logo_w, logo_h))
+            surf.blit(logo_scaled, logo_scaled.get_rect(center=MENU_LOGO_CENTER))
 
     def _draw_how_to_play(self, surf: pygame.Surface) -> None:
         panel = pygame.Rect(180, 50, 920, 620)
@@ -1904,8 +1979,8 @@ class Game:
         inf_title_col = INK if inf_avail else INK_SOFT
         draw_text(surf, self.fonts["large_bold"], "Infinite Mode", inf_title_col, topleft=(inf_card.left + 32, inf_card.top + 20))
         if inf_avail:
-            best = self.progress.infinite_best_seconds.get(INFINITE_SAVE_KEY, 0.0)
-            hint = f"Endless survival | Best: {best:.1f}s" if best else "Endless survival trial"
+            best = self.progress.infinite_best_correct.get(INFINITE_SAVE_KEY, 0)
+            hint = f"Endless survival | Best: {best} correct" if best else "Endless survival trial"
             draw_text(surf, self.fonts["small"], hint, INK_SOFT, topleft=(inf_card.left + 34, inf_card.top + 60))
             draw_chip(surf, self.fonts["body_bold"], "PLAY ∞", fill=PRIMARY, color=TEXT_ON_DARK, center=(inf_card.right - 90, inf_card.centery))
         else:
@@ -2257,11 +2332,11 @@ class Game:
         draw_card(surf, card, radius=RADIUS_PANEL)
         draw_text(surf, self.fonts["title_bold"], "Infinite Mode", PRIMARY, center=(card.centerx, card.top + 50))
         
-        draw_text(surf, self.fonts["small"], "Time Survived", INK_SOFT, center=(card.centerx, card.top + 105))
-        draw_text(surf, self.banner_font, f"{self.infinite_survived:.1f}s", INK, center=(card.centerx, card.top + 165))
+        draw_text(surf, self.fonts["small"], "Correct Answers", INK_SOFT, center=(card.centerx, card.top + 105))
+        draw_text(surf, self.banner_font, str(self.infinite_final_correct), INK, center=(card.centerx, card.top + 165))
         
-        best = self.progress.infinite_best_seconds.get(INFINITE_SAVE_KEY, 0.0)
-        best_str = f"Personal Best: {best:.1f}s"
+        best = self.progress.infinite_best_correct.get(INFINITE_SAVE_KEY, 0)
+        best_str = f"Personal Best: {best} correct"
         draw_text(surf, self.fonts["body_bold"], best_str, INK_SOFT, center=(card.centerx, card.top + 230))
         if self.infinite_is_best:
             draw_chip(surf, self.fonts["small"], "NEW BEST RECORD", fill=GOLD, color=(48, 30, 12), center=(card.centerx, card.top + 272))
@@ -2591,6 +2666,7 @@ async def main() -> None:
     canvas = pygame.Surface((VIRTUAL_W, VIRTUAL_H))
 
     game = Game()
+    game.start_intro()
     game.layout_buttons()
 
     running = True
