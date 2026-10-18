@@ -1,7 +1,9 @@
 """Audio playback used by main.py.
 
-Music streams through pygame.mixer.music; sound effects are preloaded
-Sound objects. Every call is safe when the mixer is unavailable (headless
+Music plays as a Sound on a reserved channel rather than through
+pygame.mixer.music: Pygbag's mixer.music ignores set_volume, so the music
+slider had no effect in the browser. A channel also lets tracks fade out and
+in frame by frame. Sound effects are preloaded Sound objects. Every call is safe when the mixer is unavailable (headless
 tests, blocked browser audio), and unknown sound names are ignored so
 main.py can call effects that have no file yet.
 """
@@ -41,6 +43,8 @@ SFX_GROUPS = {
 DEFAULT_VOLUME = 0.7
 # The music files are mastered loud, so the slider's 100% plays at half volume.
 MUSIC_GAIN = 0.5
+# Seconds for the old track to fade out, then again for the new one to fade in.
+MUSIC_FADE_SECONDS = 1.0
 
 
 def clamp_volume(value: float) -> float:
@@ -51,12 +55,18 @@ class AudioManager:
     def __init__(self, music_volume: float = DEFAULT_VOLUME, sfx_volume: float = DEFAULT_VOLUME) -> None:
         self.music_volume = clamp_volume(music_volume)
         self.sfx_volume = clamp_volume(sfx_volume)
-        self.current_track: str | None = None
+        self.current_track: str | None = None  # the track requested last
+        self.playing_track: str | None = None  # the track actually on the channel
+        self.music_level = 0.0  # fade multiplier, 0..1
+        self.music_channel: pygame.mixer.Channel | None = None
+        self.music_sounds: dict[str, pygame.mixer.Sound] = {}
         self.sounds: dict[str, pygame.mixer.Sound] = {}
         self.looping_sfx: dict[str, pygame.mixer.Channel] = {}
         self._last_group_choice: dict[str, str] = {}
         self.enabled = self._init_mixer()
         if self.enabled:
+            pygame.mixer.set_reserved(1)
+            self.music_channel = pygame.mixer.Channel(0)
             for name, filename in SFX_FILES.items():
                 try:
                     self.sounds[name] = pygame.mixer.Sound(str(SFX_DIR / filename))
@@ -104,29 +114,53 @@ class AudioManager:
             channel.stop()
 
     def play_music(self, track: str) -> None:
-        """Loop a named track; calling again with the playing track is a no-op."""
-        if track == self.current_track or not self.enabled:
-            return
-        filename = MUSIC_FILES.get(track)
-        if filename is None:
-            return
-        try:
-            pygame.mixer.music.load(str(MUSIC_DIR / filename))
-            pygame.mixer.music.set_volume(self.music_volume * MUSIC_GAIN)
-            pygame.mixer.music.play(loops=-1)
-        except (pygame.error, FileNotFoundError):
+        """Switch to a looping track; the change fades out then in via update()."""
+        if track == self.current_track or not self.enabled or track not in MUSIC_FILES:
             return
         self.current_track = track
 
     def stop_music(self) -> None:
-        if self.enabled:
-            pygame.mixer.music.stop()
         self.current_track = None
+
+    def update(self, dt: float) -> None:
+        """Advance music fades. Call once per frame."""
+        if self.music_channel is None:
+            return
+        step = dt / MUSIC_FADE_SECONDS
+        if self.playing_track != self.current_track and self.playing_track is not None:
+            self.music_level = max(0.0, self.music_level - step)
+            if self.music_level <= 0.0:
+                self.music_channel.stop()
+                self.playing_track = None
+        if self.playing_track is None and self.current_track is not None:
+            sound = self._music_sound(self.current_track)
+            if sound is None:
+                self.current_track = None
+            else:
+                self.music_level = 0.0
+                self.music_channel.play(sound, loops=-1)
+                self.playing_track = self.current_track
+        elif self.playing_track is not None and self.playing_track == self.current_track:
+            self.music_level = min(1.0, self.music_level + step)
+        self._apply_music_volume()
+
+    def _music_sound(self, track: str) -> pygame.mixer.Sound | None:
+        sound = self.music_sounds.get(track)
+        if sound is None:
+            try:
+                sound = pygame.mixer.Sound(str(MUSIC_DIR / MUSIC_FILES[track]))
+            except (pygame.error, FileNotFoundError):
+                return None
+            self.music_sounds[track] = sound
+        return sound
+
+    def _apply_music_volume(self) -> None:
+        if self.music_channel is not None:
+            self.music_channel.set_volume(self.music_volume * MUSIC_GAIN * self.music_level)
 
     def set_music_volume(self, volume: float) -> None:
         self.music_volume = clamp_volume(volume)
-        if self.enabled:
-            pygame.mixer.music.set_volume(self.music_volume * MUSIC_GAIN)
+        self._apply_music_volume()
 
     def set_sfx_volume(self, volume: float) -> None:
         self.sfx_volume = clamp_volume(volume)

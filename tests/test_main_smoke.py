@@ -284,13 +284,14 @@ class GameSmokeTests(unittest.TestCase):
         infinite = next(b for b in self.game.buttons if b.label == "Infinite Mode")
         self.assertTrue(infinite.enabled)
 
-    def test_infinite_mode_ends_and_records_best_time(self):
+    def test_infinite_mode_ends_and_records_best_score(self):
         self._run_until("LEVEL_COMPLETE", max_steps=500, answer_correct=True)
         self.game._replay_infinite()
         steps = self._run_until("INFINITE_RESULTS", max_steps=2000, answer_correct=False)
         self.assertEqual(self.game.state, "INFINITE_RESULTS")
         self.assertLess(steps, 2000)
-        self.assertIn(self.main.INFINITE_SAVE_KEY, self.game.progress.infinite_best_seconds)
+        best = self.game.progress.infinite_best_correct.get(self.main.INFINITE_SAVE_KEY, 0)
+        self.assertEqual(best, self.game.infinite_final_correct)
 
     def test_infinite_mode_heals_and_grows_the_paper_count(self):
         self._run_until("LEVEL_COMPLETE", max_steps=500, answer_correct=True)

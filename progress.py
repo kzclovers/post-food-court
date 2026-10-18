@@ -18,7 +18,7 @@ _DEFAULT_STATE = {
     "mastery_counts": {},  # fallacy id (str) -> correct count
     "mastered_ids": [],  # fallacy ids mastered
     "completed_levels": [],  # level numbers completed at least once
-    "infinite_best_seconds": {},  # level (str) -> best survival seconds
+    "infinite_best_correct": {},  # level (str) -> most correct answers in a run
     "music_volume": 0.7,
     "sfx_volume": 0.7,
 }
@@ -34,7 +34,7 @@ class Progress:
         self.mastery_counts: dict[int, int] = {}
         self.mastered_ids: set[int] = set()
         self.completed_levels: set[int] = set()
-        self.infinite_best_seconds: dict[int, float] = {}
+        self.infinite_best_correct: dict[int, int] = {}
         self.music_volume = 0.7
         self.sfx_volume = 0.7
         self.load()
@@ -47,8 +47,8 @@ class Progress:
             "mastery_counts": {str(k): v for k, v in self.mastery_counts.items()},
             "mastered_ids": sorted(self.mastered_ids),
             "completed_levels": sorted(self.completed_levels),
-            "infinite_best_seconds": {
-                str(k): v for k, v in self.infinite_best_seconds.items()
+            "infinite_best_correct": {
+                str(k): v for k, v in self.infinite_best_correct.items()
             },
             "music_volume": self.music_volume,
             "sfx_volume": self.sfx_volume,
@@ -61,8 +61,8 @@ class Progress:
         }
         self.mastered_ids = set(state.get("mastered_ids", []))
         self.completed_levels = set(state.get("completed_levels", []))
-        self.infinite_best_seconds = {
-            int(k): v for k, v in state.get("infinite_best_seconds", {}).items()
+        self.infinite_best_correct = {
+            int(k): int(v) for k, v in state.get("infinite_best_correct", {}).items()
         }
         self.music_volume = float(state.get("music_volume", _DEFAULT_STATE["music_volume"]))
         self.sfx_volume = float(state.get("sfx_volume", _DEFAULT_STATE["sfx_volume"]))
@@ -134,11 +134,11 @@ class Progress:
         self.completed_levels.add(level)
         self.save()
 
-    def record_infinite_result(self, level: int, survived_seconds: float) -> bool:
-        """Update the saved best time. Returns True if it's a new best."""
-        best = self.infinite_best_seconds.get(level, 0.0)
-        if survived_seconds > best:
-            self.infinite_best_seconds[level] = survived_seconds
+    def record_infinite_result(self, level: int, correct_answers: int) -> bool:
+        """Update the saved best score. Returns True if it's a new best."""
+        best = self.infinite_best_correct.get(level, 0)
+        if correct_answers > best:
+            self.infinite_best_correct[level] = correct_answers
             self.save()
             return True
         return False
