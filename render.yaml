@@ -1,0 +1,24 @@
+# Render Blueprint for Food Court.
+#
+# Food Court ships to the browser as a Pygbag build: static HTML/JS plus a
+# .apk (a renamed zip of the Python source and assets) that the pygame-web
+# runtime, loaded from pygame-web.github.io, interprets client-side. Render
+# only needs to host the three files Pygbag produces, so this is a Static
+# Site, not a Python web service.
+#
+# Deploy: on the Render dashboard, "New +" -> "Blueprint", connect this repo,
+# and Render reads this file automatically. See DEPLOY.md for the full
+# walkthrough, including the manual (no-Blueprint) setup.
+services:
+  - type: web
+    runtime: static
+    name: food-court
+    branch: main
+    buildCommand: pip install pygbag==0.9.2 && python -m pygbag --build .
+    staticPublishPath: ./build/web
+    pullRequestPreviewsEnabled: false
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.11
+      - key: SKIP_INSTALL_DEPS
+        value: "true"

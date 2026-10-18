@@ -1,0 +1,6 @@
+.venv/
+.deps/
+__pycache__/
+*.pyc
+build/
+.food_court_save.json
