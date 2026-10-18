@@ -123,6 +123,24 @@ LEVEL_CIRCLE_RECTS = [
     pygame.Rect(70 + i * 194, VIRTUAL_H //2 - LEVEL_TILE_SIZE[1] //2, *LEVEL_TILE_SIZE) for i in range(6)
 ]
 LEVEL_PORTRAIT_D = 116
+# Level-select carousel of restaurant-ticket cards.
+TICKET_SIZE = (300, 410)
+TICKET_CENTER = (VIRTUAL_W // 2, 352)
+CAROUSEL_SPACING = (0, 330, 560)  # x offset of the center, neighbor and far tickets
+CAROUSEL_SCALE = (1.0, 0.72, 0.52)
+CAROUSEL_DIM = (0, 70, 130)  # darkening alpha for tickets off center
+CAROUSEL_SPEED = 10.0
+CAROUSEL_ARROW_RECTS = (
+    pygame.Rect(TICKET_CENTER[0] - TICKET_SIZE[0] // 2 - 70, TICKET_CENTER[1] - 28, 56, 56),
+    pygame.Rect(TICKET_CENTER[0] + TICKET_SIZE[0] // 2 + 14, TICKET_CENTER[1] - 28, 56, 56),
+)
+LEVEL_STAMPS = {"Vegetable Peeler": "skinner_stamp.png", "Knife": "knife_stamp.png", "Boiling Pot": "pot_stamp.png"}
+TICKET_PAPER = (248, 242, 228)
+TICKET_BORDER = (110, 98, 88)
+TICKET_TABLE = (222, 212, 196)
+TICKET_RULE = (184, 170, 152)
+TICKET_RED = (214, 118, 106)
+TICKET_INK = (84, 84, 84)
 INFINITE_BUTTON_RECT = pygame.Rect(330, 580, 620, 100)
 RETURN_BUTTON_RECT = pygame.Rect(32, 28, 124, 48)
 PAUSE_BUTTON_RECT = pygame.Rect(HUD_TIMER_CENTER[0] + 50, 40, 44, 44)
@@ -799,6 +817,9 @@ class Game:
 
         self.state = "MENU"
         self.level = 1
+        self.carousel_index = 0
+        self.carousel_pos = 0.0
+        self._ticket_cache: dict[tuple[int, bool, bool], pygame.Surface] = {}
         self.infinite = False
         self.health = game_rules.HEALTH_MAX
         self.enemy_health = game_rules.OPPONENT_HEALTH_MAX
@@ -872,6 +893,9 @@ class Game:
         self.tables_pan = add_vertical_overscan(
             self.tables, round(GAMEPLAY_PAN_PIXELS * FOREGROUND_PAN_RATIO)
         )
+        self.level_stamps = {
+            enemy: load_image(name, (150, 150), (0, 0, 0, 0)) for enemy, name in LEVEL_STAMPS.items()
+        }
         self.dictionary_icon = load_image("dictionary icon.PNG", (48, 64), (214, 122, 54))
         book = load_image("Untitled_Artwork 9.png", BOOK_CROP.size, (255, 247, 206))
         if book.get_width() >= BOOK_CROP.right and book.get_height() >= BOOK_CROP.bottom:
@@ -1322,6 +1346,8 @@ class Game:
         if track is not None:
             self.audio.play_music(track)
         self.audio.update(dt)
+        if self.state == "LEVEL_SELECT":
+            self.carousel_pos += (self.carousel_index - self.carousel_pos) * min(1.0, dt * CAROUSEL_SPEED)
         if self.state == "INTRO":
             # Cap the step so a slow first frame cannot skip the splash.
             self.intro_t += min(dt, 0.1)
@@ -1454,10 +1480,25 @@ class Game:
             self.buttons.append(Button(RETURN_BUTTON_RECT, "Back", self._go_menu, style="secondary", radius=12))
             self.buttons.append(Button(INFINITE_BUTTON_RECT, "Infinite Mode", self.start_infinite,
                                        enabled=self._infinite_available(), style="hidden"))
-            for level, rect in zip(sorted(game_data.LEVELS), LEVEL_CIRCLE_RECTS):
-                unlocked = self._level_unlocked(level)
-                action = (lambda lvl=level: self._select_level(lvl)) if unlocked else self._noop
-                self.buttons.append(Button(rect, "", action, enabled=unlocked, style="hidden"))
+            levels = sorted(game_data.LEVELS)
+            if self.carousel_index > 0:
+                self.buttons.append(Button(CAROUSEL_ARROW_RECTS[0], "", lambda: self._scroll_carousel(-1),
+                                           style="icon", icon="prev"))
+            if self.carousel_index < len(levels) - 1:
+                self.buttons.append(Button(CAROUSEL_ARROW_RECTS[1], "", lambda: self._scroll_carousel(1),
+                                           style="icon", icon="next"))
+            for i, level in enumerate(levels):
+                offset = i - self.carousel_index
+                if abs(offset) > 1:
+                    continue
+                if offset == 0:
+                    unlocked = self._level_unlocked(level)
+                    action = (lambda lvl=level: self._select_level(lvl)) if unlocked else self._noop
+                    enabled = unlocked
+                else:
+                    action = lambda d=offset: self._scroll_carousel(d)
+                    enabled = True
+                self.buttons.append(Button(self._ticket_rect(offset), "", action, enabled=enabled, style="hidden"))
         elif self.state == "TEACHING":
             for fid in self.teaching_ids:
                 if fid in self.teaching_added:
@@ -1636,6 +1677,14 @@ class Game:
 
     def handle_key(self, event: pygame.event.Event) -> None:
         """Typing into the dev password box on the settings page."""
+        if self.state == "LEVEL_SELECT" and event.type == pygame.KEYDOWN and not self.show_dictionary:
+            if event.key in (pygame.K_LEFT, pygame.K_a):
+                self._scroll_carousel(-1)
+            elif event.key in (pygame.K_RIGHT, pygame.K_d):
+                self._scroll_carousel(1)
+            elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+                self._select_level(sorted(game_data.LEVELS)[self.carousel_index])
+            return
         if self.state != "SETTINGS" or not self.dev_input_active:
             return
         if event.type == pygame.TEXTINPUT:
@@ -1720,7 +1769,25 @@ class Game:
         self.state = "HOW_TO_PLAY"
 
     def _open_level_select(self) -> None:
+        # Open the carousel on the furthest level the player can play.
+        levels = sorted(game_data.LEVELS)
+        self.carousel_index = max(i for i, lvl in enumerate(levels) if self._level_unlocked(lvl))
+        self.carousel_pos = float(self.carousel_index)
         self.state = "LEVEL_SELECT"
+
+    def _scroll_carousel(self, step: int) -> None:
+        self.carousel_index = max(0, min(len(game_data.LEVELS) - 1, self.carousel_index + step))
+
+    def _ticket_rect(self, offset: float) -> pygame.Rect:
+        """Screen rect of a carousel ticket `offset` slots from the center."""
+        d = min(abs(offset), 2.0)
+        i = min(int(d), 1)
+        t = d - i
+        x = CAROUSEL_SPACING[i] + (CAROUSEL_SPACING[i + 1] - CAROUSEL_SPACING[i]) * t
+        scale = CAROUSEL_SCALE[i] + (CAROUSEL_SCALE[i + 1] - CAROUSEL_SCALE[i]) * t
+        rect = pygame.Rect(0, 0, round(TICKET_SIZE[0] * scale), round(TICKET_SIZE[1] * scale))
+        rect.center = (round(TICKET_CENTER[0] + x * (1 if offset >= 0 else -1)), TICKET_CENTER[1])
+        return rect
 
     def _level_unlocked(self, level: int) -> bool:
         """Levels open in order: each needs the previous one completed."""
@@ -1935,38 +2002,27 @@ class Game:
         draw_shadow_text(surf, self.fonts["title_bold"], "Select a Level", TEXT_ON_DARK, offset=2, alpha=160, center=(VIRTUAL_W // 2, 70))
         draw_shadow_text(surf, self.fonts["small"], "Master all logical fallacies across 6 culinary trials", TEXT_ON_DARK, offset=1, alpha=140, center=(VIRTUAL_W // 2, 110))
 
-        # Six level cards
-        for level, rect in zip(sorted(game_data.LEVELS), LEVEL_CIRCLE_RECTS):
-            unlocked = self._level_unlocked(level)
-            enemy = game_data.enemy_for_level(level)
-            is_hover = unlocked and self._is_hovered(rect)
-
-            card_rect = rect.copy()
-            if is_hover:
-                card_rect = card_rect.inflate(8, 8)
-
-            fill_bg = (255, 255, 255) if is_hover else (SURFACE if unlocked else SURFACE_ALT)
-            border_col = PRIMARY if is_hover else (LINE_STRONG if unlocked else LINE)
-            draw_card(surf, card_rect, radius=16, fill=fill_bg, border=border_col)
-
-            # Portrait
-            p_size = LEVEL_PORTRAIT_D
-            p_rect = pygame.Rect(0, 0, p_size, p_size)
-            p_rect.center = (card_rect.centerx, card_rect.top + 76)
-            portrait = self.enemy_portraits[enemy] if unlocked else self.enemy_portraits_locked[enemy]
-            surf.blit(pygame.transform.smoothscale(portrait, (p_size, p_size)), p_rect)
-            draw_smooth_circle(surf, (0, 0, 0, 0), p_rect.center, p_size // 2, border=border_col, border_width=2)
-
-            if not unlocked:
-                draw_icon(surf, "lock", p_rect.center, 54, (240, 240, 240))
-                draw_text(surf, self.fonts["body_bold"], f"Level {level}", INK_SOFT, center=(card_rect.centerx, card_rect.bottom - 100))
-                draw_chip(surf, self.fonts["paper"], "LOCKED", fill=(180, 170, 160), color=TEXT_ON_DARK, center=(card_rect.centerx, card_rect.bottom - 28))
-            else:
-                draw_text(surf, self.fonts["body_bold"], f"Level {level}", INK, center=(card_rect.centerx, card_rect.bottom - 100))
-                if level in self.progress.completed_levels:
-                    draw_chip(surf, self.fonts["paper"], "CLEARED", fill=SECONDARY, color=TEXT_ON_DARK, center=(card_rect.centerx, card_rect.bottom - 28))
-                else:
-                    draw_chip(surf, self.fonts["paper"], enemy.split()[0], fill=SURFACE_ALT, color=INK_SOFT, center=(card_rect.centerx, card_rect.bottom - 28))
+        # Ticket carousel, drawn farthest first so the center ticket sits on top
+        levels = sorted(game_data.LEVELS)
+        order = sorted(range(len(levels)), key=lambda i: -abs(i - self.carousel_pos))
+        for i in order:
+            offset = i - self.carousel_pos
+            if abs(offset) > 2.4:
+                continue
+            level = levels[i]
+            rect = self._ticket_rect(offset)
+            if abs(offset) < 0.5 and self._level_unlocked(level) and self._is_hovered(rect):
+                rect = rect.inflate(10, 14)
+            draw_shadow(surf, rect, radius=4, offset=(0, 6), alpha=80, blur=10)
+            ticket = pygame.transform.smoothscale(self._ticket_surface(level), rect.size)
+            d = min(abs(offset), 2.0)
+            k = min(int(d), 1)
+            dim = round(CAROUSEL_DIM[k] + (CAROUSEL_DIM[k + 1] - CAROUSEL_DIM[k]) * (d - k))
+            if dim:
+                shade = pygame.Surface(rect.size, pygame.SRCALPHA)
+                shade.fill((*OVERLAY_DARK, dim))
+                ticket.blit(shade, (0, 0))
+            surf.blit(ticket, rect)
 
         # Infinite Mode banner card below
         inf_card = INFINITE_BUTTON_RECT
@@ -1986,6 +2042,55 @@ class Game:
         else:
             draw_text(surf, self.fonts["small"], "Defeat Level 1 to unlock Infinite Mode", INK_SOFT, topleft=(inf_card.left + 34, inf_card.top + 50))
             draw_chip(surf, self.fonts["body_bold"], "LOCKED", fill=(180, 170, 160), color=TEXT_ON_DARK, center=(inf_card.right - 90, inf_card.centery))
+
+    def _ticket_surface(self, level: int) -> pygame.Surface:
+        """A level's restaurant-ticket card at full size, cached per lock state."""
+        unlocked = self._level_unlocked(level)
+        key = (level, unlocked, level in self.progress.completed_levels)
+        if key in self._ticket_cache:
+            return self._ticket_cache[key]
+        w, h = TICKET_SIZE
+        ticket = pygame.Surface((w, h), pygame.SRCALPHA)
+        ticket.fill(TICKET_PAPER)
+        # Header: "LEVEL #n", then the order slip's little boxes
+        draw_text(ticket, self.fonts["title_bold"], f"LEVEL #{level}", TICKET_RED, midleft=(22, 52))
+        pygame.draw.line(ticket, TICKET_RULE, (0, 96), (w, 96), 2)
+        for x in (round(w * 0.2), round(w * 0.42)):
+            pygame.draw.line(ticket, TICKET_RULE, (x, 96), (x, 136), 2)
+        # Ruled table area
+        table = pygame.Rect(0, 136, w, h - 136 - 28)
+        pygame.draw.rect(ticket, TICKET_TABLE, table)
+        pygame.draw.line(ticket, TICKET_RULE, (0, table.top), (w, table.top), 2)
+        for y in range(table.top + 48, table.bottom - 8, 52):
+            pygame.draw.line(ticket, TICKET_RULE, (0, y), (w, y - 4), 2)
+        pygame.draw.line(ticket, TICKET_RULE, (round(w * 0.75), table.top), (round(w * 0.75), table.bottom), 2)
+        # The order: tomato v. <opponent>
+        enemy = game_data.enemy_for_level(level)
+        font = self.fonts["body_bold"]
+        lines = ["tomato", "v."] + wrap_text(enemy.lower(), font, round(w * 0.7))
+        y = table.top + 30
+        for j, line in enumerate(lines):
+            draw_text(ticket, font, line, TICKET_INK, midleft=(24 + min(j, 2) * 26, y))
+            y += 36
+        if level in self.progress.completed_levels:
+            draw_chip(ticket, self.fonts["paper"], "CLEARED", fill=SECONDARY, color=TEXT_ON_DARK,
+                      center=(round(w * 0.71), 116))
+        stamp = self.level_stamps.get(enemy)
+        if stamp is not None:
+            stamp = pygame.transform.smoothscale(stamp, (112, 112))
+            stamp.set_alpha(215)
+            ticket.blit(stamp, stamp.get_rect(bottomright=(w - 10, h - 34)))
+        pygame.draw.rect(ticket, TICKET_BORDER, ticket.get_rect(), 3)
+        if not unlocked:
+            ticket = pygame.transform.grayscale(ticket)
+            fog = pygame.Surface((w, h), pygame.SRCALPHA)
+            fog.fill((255, 255, 255, 90))
+            ticket.blit(fog, (0, 0))
+            center = (w // 2, h // 2 + 20)
+            draw_smooth_circle(ticket, (70, 66, 64, 220), center, 52)
+            draw_icon(ticket, "lock", center, 54, (240, 240, 240))
+        self._ticket_cache[key] = ticket
+        return ticket
 
     def _fitted_card(self, image: pygame.Surface, max_size: tuple[int, int], center: tuple[int, int]) -> pygame.Rect:
         fit = min(max_size[0] / image.get_width(), max_size[1] / image.get_height())
