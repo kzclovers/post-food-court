@@ -291,18 +291,29 @@ def wrap_text(text: str, font: pygame.font.Font, max_width: int) -> list[str]:
     return list(_wrap_text_cached(text, font, max_width))
 
 
+@lru_cache(maxsize=4096)
+def _word_width(font: pygame.font.Font, word: str) -> int:
+    return font.size(word)[0]
+
+
 @lru_cache(maxsize=512)
 def _wrap_text_cached(text: str, font: pygame.font.Font, max_width: int) -> tuple[str, ...]:
     words = text.split(" ")
     lines: list[str] = []
     current = ""
+    current_w = 0
+    space_w = font.size(" ")[0]
     for word in words:
-        trial = f"{current} {word}".strip()
-        if font.size(trial)[0] <= max_width or not current:
-            current = trial
+        # Sum per-word widths rather than re-measuring the growing line.
+        word_w = _word_width(font, word)
+        trial_w = current_w + space_w + word_w if current else word_w
+        if trial_w <= max_width or not current:
+            current = f"{current} {word}".strip()
+            current_w = trial_w
         else:
             lines.append(current)
             current = word
+            current_w = word_w
     if current:
         lines.append(current)
     return tuple(lines)
@@ -1720,6 +1731,14 @@ class Game:
     def _close_credits(self) -> None:
         self.state = "SETTINGS"
 
+    def prewarm(self) -> None:
+        """Build the level-select tickets before play starts.
+
+        The first frame of level select built every ticket at once; in the
+        browser that frame ran long enough to make the audio hitch on click.
+        """
+        self._draw_level_select(pygame.Surface((VIRTUAL_W, VIRTUAL_H)))
+
     def start_intro(self) -> None:
         """Startup splash: a big centered logo that glides into the menu."""
         self.intro_t = 0.0
@@ -2874,6 +2893,7 @@ async def main() -> None:
     canvas = pygame.Surface((VIRTUAL_W, VIRTUAL_H))
 
     game = Game()
+    game.prewarm()
     game.start_intro()
     game.layout_buttons()
 
