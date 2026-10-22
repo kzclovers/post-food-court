@@ -20,21 +20,21 @@ MUSIC_DIR = ASSET_DIR / "music"
 SFX_DIR = ASSET_DIR / "sound effects"
 
 MUSIC_FILES = {
-    "main": "main theme.mp3",
-    "infinite": "infinite theme.mp3",
-    "veggie_skinner": "veggie skinner theme.mp3",
-    "knife": "knife theme.mp3",
-    "boiling_pot": "boiling pot theme.mp3",
+    "main": "main theme.ogg",
+    "infinite": "infinite theme.ogg",
+    "veggie_skinner": "veggie skinner theme.ogg",
+    "knife": "knife theme.ogg",
+    "boiling_pot": "boiling pot theme.ogg",
 }
 
 SFX_FILES = {
-    "chomp": "carrot chomp.mp3",
-    "knife_hit": "Chef knife hit.mp3",
-    "click": "click.mp3",
-    "text": "text.mp3",
-    "knife_correct_1": "knife1.mp3",
-    "knife_correct_2": "knife2.mp3",
-    "knife_correct_3": "knife3.mp3",
+    "chomp": "carrot chomp.ogg",
+    "knife_hit": "Chef knife hit.ogg",
+    "click": "click.ogg",
+    "text": "text.ogg",
+    "knife_correct_1": "knife1.ogg",
+    "knife_correct_2": "knife2.ogg",
+    "knife_correct_3": "knife3.ogg",
 }
 SFX_GROUPS = {
     "correct": ("knife_correct_1", "knife_correct_2", "knife_correct_3"),
