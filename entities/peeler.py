@@ -37,6 +37,8 @@ class Peeler:
             frame = pygame.transform.smoothscale(source, (width, height))
             if flip_x:
                 frame = pygame.transform.flip(frame, True, False)
+            # RLE makes this per-frame alpha blit much cheaper in the browser.
+            frame.set_alpha(255, pygame.RLEACCEL)
             self.scaled_frames[key] = frame
 
         x, y = anchor

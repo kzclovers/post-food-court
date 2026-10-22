@@ -37,6 +37,8 @@ class Tomato:
             source = self.frames[frame_index]
             height = round(source.get_height() * width / source.get_width())
             frame = pygame.transform.smoothscale(source, (width, height))
+            # RLE makes this per-frame alpha blit much cheaper in the browser.
+            frame.set_alpha(255, pygame.RLEACCEL)
             self.scaled_frames[key] = frame
 
         # Shake the tomato during the mistake animation.

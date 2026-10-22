@@ -231,6 +231,18 @@ def slice_sheet(sheet: pygame.Surface, count: int, cell: int = 1024) -> list[pyg
     return frames
 
 
+def rle(surf: pygame.Surface) -> pygame.Surface:
+    """RLE-encode a finished alpha surface that is blitted every frame.
+
+    RLE skips transparent runs and copies opaque ones, so it blits up to ~30x
+    faster in the browser (tables layer: 0.7 ms vs 23 ms) with identical output.
+    RLE surfaces are slow to modify, so only use this on surfaces that are done.
+    """
+    if surf.get_flags() & pygame.SRCALPHA:
+        surf.set_alpha(255, pygame.RLEACCEL)
+    return surf
+
+
 _SCALE_CACHE: dict[tuple[int, tuple[int, int]], tuple[pygame.Surface, pygame.Surface]] = {}
 _SCALE_CACHE_LIMIT = 256
 
@@ -248,9 +260,87 @@ def cached_smoothscale(img: pygame.Surface, size: tuple[int, int]) -> pygame.Sur
         return hit[1]
     if len(_SCALE_CACHE) >= _SCALE_CACHE_LIMIT:
         _SCALE_CACHE.clear()
-    scaled = pygame.transform.smoothscale(img, key[1])
+    scaled = rle(pygame.transform.smoothscale(img, key[1]))
     _SCALE_CACHE[key] = (img, scaled)
     return scaled
+
+
+def dim_screen(surf: pygame.Surface, color: tuple[int, int, int], alpha: int) -> None:
+    """Darken the whole surface toward `color`, like blitting a translucent overlay.
+
+    An opaque surface with whole-surface alpha blends ~6x faster in the browser
+    than a per-pixel-alpha overlay (measured 3.8 ms vs 23 ms), which starved the audio.
+    """
+    key = (surf.get_size(), tuple(color[:3]))
+    overlay = _DIM_CACHE.get(key)
+    if overlay is None:
+        overlay = pygame.Surface(surf.get_size())
+        overlay.fill(color[:3])
+        _DIM_CACHE[key] = overlay
+    overlay.set_alpha(alpha)
+    surf.blit(overlay, (0, 0))
+
+
+_DIM_CACHE: dict[tuple, pygame.Surface] = {}
+
+
+_CORE_CACHE: dict[int, tuple[pygame.Surface, pygame.Rect | None, pygame.Surface | None]] = {}
+
+
+def _opaque_core(img: pygame.Surface) -> pygame.Rect | None:
+    """The largest evenly inset rect of `img` that is fully opaque, if it's worth using."""
+    w, h = img.get_size()
+    if w < 32 or h < 32 or not img.get_flags() & pygame.SRCALPHA:
+        return None
+    # Card art is painted at ~99% opacity, so treat alpha >= 250 as opaque.
+    mask = pygame.mask.from_surface(img, 249)
+
+    def opaque(d: int) -> bool:
+        cw, ch = w - 2 * d, h - 2 * d
+        return mask.overlap_area(pygame.Mask((cw, ch), fill=True), (d, d)) == cw * ch
+
+    lo, hi = 0, min(w, h) // 2 - 1
+    if not opaque(hi):
+        return None
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if opaque(mid):
+            hi = mid
+        else:
+            lo = mid + 1
+    core = pygame.Rect(lo, lo, w - 2 * lo, h - 2 * lo)
+    return core if core.width * core.height * 2 >= w * h else None
+
+
+def blit_mostly_opaque(dst: pygame.Surface, img: pygame.Surface, pos) -> None:
+    """Blit a long-lived image whose middle is opaque (cards, panels, tickets).
+
+    Only the translucent edges are alpha-blended; the opaque middle is copied.
+    In the browser, alpha blending is slow enough that big panels drawn every
+    frame made the audio crackle.
+    """
+    hit = _CORE_CACHE.get(id(img))
+    if hit is None or hit[0] is not img:
+        if len(_CORE_CACHE) >= 256:
+            _CORE_CACHE.clear()
+        core = _opaque_core(img)
+        try:
+            middle = img.subsurface(core).convert() if core is not None else None
+        except pygame.error:  # no display yet
+            middle = None
+        hit = (img, core, middle)
+        _CORE_CACHE[id(img)] = hit
+    _, core, middle = hit
+    x, y = pos[0], pos[1]
+    if middle is None:
+        dst.blit(img, (x, y))
+        return
+    w, h = img.get_size()
+    dst.blit(img, (x, y), (0, 0, w, core.top))
+    dst.blit(img, (x, y + core.bottom), (0, core.bottom, w, h - core.bottom))
+    dst.blit(img, (x, y + core.top), (0, core.top, core.left, core.height))
+    dst.blit(img, (x + core.right, y + core.top), (core.right, core.top, w - core.right, core.height))
+    dst.blit(middle, (x + core.left, y + core.top))
 
 
 def scale_square(img: pygame.Surface, size: int) -> pygame.Surface:
@@ -359,7 +449,7 @@ def _rounded_rect_surface(
             )
     else:
         pygame.draw.rect(surface, fill, full, border_radius=radius * supersample)
-    return pygame.transform.smoothscale(surface, size)
+    return rle(pygame.transform.smoothscale(surface, size))
 
 
 def draw_rounded_rect(
@@ -377,7 +467,7 @@ def draw_rounded_rect(
         rect.size, tuple(fill), max(0, radius), tuple(border) if border is not None else None,
         max(0, border_width),
     )
-    surf.blit(image, rect)
+    blit_mostly_opaque(surf, image, rect.topleft)
 
 
 @lru_cache(maxsize=128)
@@ -394,7 +484,7 @@ def _circle_surface(radius: int, fill: tuple[int, ...], border: tuple[int, ...] 
             pygame.draw.circle(surface, fill, center, inner_r)
     else:
         pygame.draw.circle(surface, fill, center, r)
-    return pygame.transform.smoothscale(surface, (radius * 2, radius * 2))
+    return rle(pygame.transform.smoothscale(surface, (radius * 2, radius * 2)))
 
 
 def draw_smooth_circle(
@@ -443,7 +533,7 @@ def _soft_shadow(size: tuple[int, int], radius: int, alpha: int, blur: int) -> p
         rect = surface.get_rect().inflate(-inset * 2, -inset * 2)
         pygame.draw.rect(surface, (*SHADOW, max(1, alpha // steps)), rect,
                          border_radius=radius + blur - inset)
-    return surface
+    return rle(surface)
 
 
 def draw_shadow(surf: pygame.Surface, rect: pygame.Rect, radius: int = RADIUS_PANEL,
@@ -452,7 +542,18 @@ def draw_shadow(surf: pygame.Surface, rect: pygame.Rect, radius: int = RADIUS_PA
     if rect.width <= 0 or rect.height <= 0:
         return
     shadow = _soft_shadow(rect.size, radius, alpha, blur)
-    surf.blit(shadow, (rect.left - blur + offset[0], rect.top - blur + offset[1]))
+    sx, sy = rect.left - blur + offset[0], rect.top - blur + offset[1]
+    # Every shadow sits under an opaque shape, so skip blending the part that
+    # shape will cover (inset by its corner radius); blending is slow in the browser.
+    hole = rect.inflate(-2 * radius - 2, -2 * radius - 2).move(-sx, -sy).clip(shadow.get_rect())
+    if hole.width <= 0 or hole.height <= 0:
+        surf.blit(shadow, (sx, sy))
+        return
+    w, h = shadow.get_size()
+    surf.blit(shadow, (sx, sy), (0, 0, w, hole.top))
+    surf.blit(shadow, (sx, sy + hole.bottom), (0, hole.bottom, w, h - hole.bottom))
+    surf.blit(shadow, (sx, sy + hole.top), (0, hole.top, hole.left, hole.height))
+    surf.blit(shadow, (sx + hole.right, sy + hole.top), (hole.right, hole.top, w - hole.right, hole.height))
 
 
 def draw_card(surf: pygame.Surface, rect: pygame.Rect, radius: int = RADIUS_PANEL, fill=SURFACE,
@@ -587,13 +688,21 @@ def draw_icon(surf: pygame.Surface, name: str, center: tuple[int, int], size: in
 
 
 def draw_outlined_text(surf, font, text, center, fill=(255, 255, 255), outline=(60, 34, 20), width=1) -> None:
+    label = _outlined_text_surface(font, text, tuple(fill), tuple(outline), width)
+    surf.blit(label, label.get_rect(center=center))
+
+
+@lru_cache(maxsize=256)
+def _outlined_text_surface(font, text, fill, outline, width) -> pygame.Surface:
+    """Pre-composite the outline so a label is one blit a frame, not a dozen."""
     base = font.render(text, True, outline)
-    rect = base.get_rect(center=center)
+    label = pygame.Surface((base.get_width() + 2 * width, base.get_height() + 2 * width), pygame.SRCALPHA)
     for dx in range(-width, width + 1):
         for dy in range(-width, width + 1):
             if dx * dx + dy * dy <= width * width:
-                surf.blit(base, rect.move(dx, dy))
-    surf.blit(font.render(text, True, fill), rect)
+                label.blit(base, (width + dx, width + dy))
+    label.blit(font.render(text, True, fill), (width, width))
+    return rle(label)
 
 
 def circle_portrait(sprite: pygame.Surface, diameter: int, bg=(245, 242, 236), darken: bool = False) -> pygame.Surface:
@@ -919,12 +1028,15 @@ class Game:
 
     def _load_assets(self) -> None:
         raw_bg = load_image("Background.png", (VIRTUAL_W, VIRTUAL_H - 400), (60, 38, 26))
-        self.bg = cover_scale(raw_bg, (VIRTUAL_W, VIRTUAL_H), anchor_y=0.0)
+        # Full-screen backgrounds are opaque; convert() drops the alpha channel so
+        # they copy instead of alpha-blending a million pixels per frame, which
+        # was too slow in the browser and starved the audio.
+        self.bg = cover_scale(raw_bg, (VIRTUAL_W, VIRTUAL_H), anchor_y=0.0).convert()
         self.bg_gameplay = self.bg.copy()
         light_overlay = pygame.Surface((VIRTUAL_W, VIRTUAL_H), pygame.SRCALPHA)
         light_overlay.fill((255, 255, 200, 32))
         self.bg_gameplay.blit(light_overlay, (0, 0))
-        self.bg_pan = add_vertical_overscan(self.bg_gameplay, GAMEPLAY_PAN_PIXELS)
+        self.bg_pan = add_vertical_overscan(self.bg_gameplay, GAMEPLAY_PAN_PIXELS).convert()
         # Each moving answer paper gets one randomly chosen food-themed backdrop.
         self.fallacy_paper_backgrounds = [
             load_image(f"bg_fallacies/{name}_bg.png")
@@ -932,7 +1044,7 @@ class Game:
         ]
         self.bg_faded = cover_scale(
             load_image("background_faded.png", (VIRTUAL_W, VIRTUAL_H - 200  ), (90, 60, 40)), (VIRTUAL_W, VIRTUAL_H), anchor_y=0.0
-        )
+        ).convert()
         self.logo = load_image("LOGO_food_court.png", (600, 460), (214, 122, 54))
         # The intro animates the logo's size each frame; scaling from this copy
         # instead of the full-resolution original keeps that cheap.
@@ -948,9 +1060,9 @@ class Game:
         # Align tables with the exact same cover crop as Background.png
         raw_tables = load_image("tables.png", (VIRTUAL_W, VIRTUAL_H), (0, 0, 0, 0))
         self.tables = cover_scale(raw_tables, (VIRTUAL_W, VIRTUAL_H), anchor_y=1.0)
-        self.tables_pan = add_vertical_overscan(
+        self.tables_pan = rle(add_vertical_overscan(
             self.tables, round(GAMEPLAY_PAN_PIXELS * FOREGROUND_PAN_RATIO)
-        )
+        ))
         self.level_stamps = {
             enemy: load_image(name, (150, 150), (0, 0, 0, 0)) for enemy, name in LEVEL_STAMPS.items()
         }
@@ -1022,13 +1134,13 @@ class Game:
 
         self.tomato_frames = [scale_square(f, CHARACTER_SIZE) for f in self.tomato_frames]
         self.chef_frames = [
-            pygame.transform.smoothscale(
+            rle(pygame.transform.smoothscale(
                 frame,
                 (
                     max(1, round(frame.get_width() * CHEF_SIZE / frame.get_height())),
                     CHEF_SIZE,
                 ),
-            )
+            ))
             for frame in self.chef_frames
         ]
 
@@ -1999,9 +2111,7 @@ class Game:
             button.draw(surf, font, self.fonts["large_bold"])
 
     def _draw_pause_popup(self, surf: pygame.Surface) -> None:
-        dim = pygame.Surface((VIRTUAL_W, VIRTUAL_H), pygame.SRCALPHA)
-        dim.fill((*OVERLAY_DARK, 180))
-        surf.blit(dim, (0, 0))
+        dim_screen(surf, OVERLAY_DARK, 180)
         draw_card(surf, PAUSE_POPUP_RECT, radius=RADIUS_PANEL)
         draw_text(surf, self.fonts["title_bold"], "PAUSED", PRIMARY, center=(PAUSE_POPUP_RECT.centerx, PAUSE_POPUP_RECT.top + 56))
         pygame.draw.line(surf, LINE, (PAUSE_POPUP_RECT.left + 36, PAUSE_POPUP_RECT.top + 92),
@@ -2111,7 +2221,7 @@ class Game:
             d = min(abs(offset), 2.0)
             k = min(int(d), 1)
             dim = round(CAROUSEL_DIM[k] + (CAROUSEL_DIM[k + 1] - CAROUSEL_DIM[k]) * (d - k))
-            surf.blit(ticket, rect)
+            blit_mostly_opaque(surf, ticket, rect.topleft)
             if dim:
                 # Shade on the screen, not the shared cached ticket.
                 shade = pygame.Surface(rect.size, pygame.SRCALPHA)
@@ -2204,9 +2314,7 @@ class Game:
         return card, button
 
     def _draw_teaching_cards(self, surf: pygame.Surface) -> None:
-        overlay = pygame.Surface((VIRTUAL_W, VIRTUAL_H), pygame.SRCALPHA)
-        overlay.fill((*OVERLAY_DARK, 180))
-        surf.blit(overlay, (0, 0))
+        dim_screen(surf, OVERLAY_DARK, 180)
         draw_shadow_text(surf, self.fonts["title_bold"], "New Fallacies!", TEXT_ON_DARK, offset=2, alpha=160, center=(VIRTUAL_W // 2, 120))
         added_txt = f"Add all three to your dictionary to start the warm-up ({len(self.teaching_added)}/{len(self.teaching_ids)})"
         draw_shadow_text(surf, self.fonts["body"], added_txt, TEXT_ON_DARK, offset=1, alpha=140, center=(VIRTUAL_W // 2, 164))
@@ -2217,7 +2325,7 @@ class Game:
                 continue
             card, button = self._add_card_layout(fid)
             draw_shadow(surf, card, radius=16, offset=(0, 6), alpha=70, blur=10)
-            surf.blit(cached_smoothscale(image, card.size), card)
+            blit_mostly_opaque(surf, cached_smoothscale(image, card.size), card.topleft)
             if fid in self.teaching_added:
                 draw_rounded_rect(surf, button, SECONDARY, 12, SECONDARY_DARK, 2)
                 draw_icon(surf, "check", (button.centerx - 50, button.centery), 24, TEXT_ON_DARK)
@@ -2340,10 +2448,8 @@ class Game:
         if self.state == "FEEDBACK":
             if self.review_fallacy_id is not None:
                 # Dim the gameplay and show the review card beneath the Judge's dialogue.
-                overlay = pygame.Surface((VIRTUAL_W, VIRTUAL_H), pygame.SRCALPHA)
                 overlay_alpha = min(160, int(160 * (self.review_age / FEEDBACK_ENTER_SECONDS))) if self.review_age < FEEDBACK_ENTER_SECONDS else 160
-                overlay.fill((*OVERLAY_DARK, overlay_alpha))
-                surf.blit(overlay, (0, 0))
+                dim_screen(surf, OVERLAY_DARK, overlay_alpha)
                 self._draw_review_flashcard(surf)
 
         claim_box = DIALOGUE_RECT
@@ -2503,10 +2609,8 @@ class Game:
         progress = 1 - max(0.0, self.gavel_timer) / GAVEL_DURATION
         frame_idx = min(len(self.chef_frames) - 1, int(progress * len(self.chef_frames)))
         chef = self.chef_frames[frame_idx]
-        overlay = pygame.Surface((VIRTUAL_W, VIRTUAL_H), pygame.SRCALPHA)
-        overlay.fill((20, 12, 8, 140))
-        surf.blit(overlay, (0, 0))
-        big = pygame.transform.smoothscale(chef, (chef.get_width() * 2, chef.get_height() * 2))
+        dim_screen(surf, (20, 12, 8), 140)
+        big = cached_smoothscale(chef, (chef.get_width() * 2, chef.get_height() * 2))
         surf.blit(big, big.get_rect(center=(VIRTUAL_W // 2, VIRTUAL_H // 2)))
 
     def _draw_white_card(self, surf: pygame.Surface, card: pygame.Rect) -> None:
@@ -2519,9 +2623,7 @@ class Game:
                 pygame.draw.circle(surf, SPARKLE_COLOR, (x, y), 4)
 
     def _draw_result_card(self, surf: pygame.Surface, title: str, color: tuple) -> None:
-        dim = pygame.Surface((VIRTUAL_W, VIRTUAL_H), pygame.SRCALPHA)
-        dim.fill((*OVERLAY_DARK, 180))
-        surf.blit(dim, (0, 0))
+        dim_screen(surf, OVERLAY_DARK, 180)
 
         card = pygame.Rect(380, 110, 520, 420)
         draw_card(surf, card, radius=RADIUS_PANEL)
@@ -2545,9 +2647,7 @@ class Game:
             draw_text(surf, self.fonts["small"], sub, INK_SOFT, center=(card.centerx, card.top + 280))
 
     def _draw_infinite_results(self, surf: pygame.Surface) -> None:
-        dim = pygame.Surface((VIRTUAL_W, VIRTUAL_H), pygame.SRCALPHA)
-        dim.fill((*OVERLAY_DARK, 180))
-        surf.blit(dim, (0, 0))
+        dim_screen(surf, OVERLAY_DARK, 180)
 
         card = pygame.Rect(380, 110, 520, 420)
         draw_card(surf, card, radius=RADIUS_PANEL)
@@ -2774,9 +2874,7 @@ class Game:
         image = self.detail_cards.get(self.zoomed_card)
         if image is None:
             return
-        dim = pygame.Surface((VIRTUAL_W, VIRTUAL_H), pygame.SRCALPHA)
-        dim.fill((16, 10, 8, 150))
-        surf.blit(dim, (0, 0))
+        dim_screen(surf, (16, 10, 8), 150)
         fit = min(980 / image.get_width(), 620 / image.get_height())
         scale = 0.72 + 0.28 * smoothstep(self.zoom_t)
         width = max(1, int(image.get_width() * fit * scale))
@@ -2896,7 +2994,7 @@ async def main() -> None:
         display_flags = pygame.RESIZABLE | pygame.SCALED
         screen = pygame.display.set_mode((VIRTUAL_W, VIRTUAL_H), display_flags, vsync=1)
     clock = pygame.time.Clock()
-    canvas = pygame.Surface((VIRTUAL_W, VIRTUAL_H))
+    canvas = pygame.Surface((VIRTUAL_W, VIRTUAL_H)).convert()
 
     game = Game()
     game.prewarm()
