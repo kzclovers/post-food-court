@@ -2879,6 +2879,12 @@ async def main() -> None:
     # when a frame runs long.
     pygame.mixer.pre_init(44100, -16, 2, 4096 if sys.platform == "emscripten" else 1024)
     pygame.init()
+    if sys.platform == "emscripten":
+        # Pygbag's page already called pygame.init() before this file ran, so
+        # pre_init had no effect and the mixer kept its tiny default buffer.
+        # Restart it so the larger buffer actually applies.
+        pygame.mixer.quit()
+        pygame.mixer.init(44100, -16, 2, 4096)
     pygame.display.set_caption("Food Court")
     # Let SDL scale the virtual canvas and synchronize presentation to the
     # display when the active renderer supports it.
