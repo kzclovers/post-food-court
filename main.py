@@ -231,6 +231,28 @@ def slice_sheet(sheet: pygame.Surface, count: int, cell: int = 1024) -> list[pyg
     return frames
 
 
+_SCALE_CACHE: dict[tuple[int, tuple[int, int]], tuple[pygame.Surface, pygame.Surface]] = {}
+_SCALE_CACHE_LIMIT = 256
+
+
+def cached_smoothscale(img: pygame.Surface, size: tuple[int, int]) -> pygame.Surface:
+    """smoothscale for long-lived images drawn every frame.
+
+    smoothscale is the dominant per-frame cost; in the browser it starved the
+    audio callback and made sound crackle. Results are cached by source and size.
+    The returned surface is shared, so callers must copy() before mutating it.
+    """
+    key = (id(img), (int(size[0]), int(size[1])))
+    hit = _SCALE_CACHE.get(key)
+    if hit is not None and hit[0] is img:
+        return hit[1]
+    if len(_SCALE_CACHE) >= _SCALE_CACHE_LIMIT:
+        _SCALE_CACHE.clear()
+    scaled = pygame.transform.smoothscale(img, key[1])
+    _SCALE_CACHE[key] = (img, scaled)
+    return scaled
+
+
 def scale_square(img: pygame.Surface, size: int) -> pygame.Surface:
     return pygame.transform.smoothscale(img, (size, size))
 
@@ -265,6 +287,12 @@ def add_vertical_overscan(img: pygame.Surface, margin: int) -> pygame.Surface:
 
 
 def wrap_text(text: str, font: pygame.font.Font, max_width: int) -> list[str]:
+    # Callers re-wrap the same strings every frame; font.size is too slow for that in the browser.
+    return list(_wrap_text_cached(text, font, max_width))
+
+
+@lru_cache(maxsize=512)
+def _wrap_text_cached(text: str, font: pygame.font.Font, max_width: int) -> tuple[str, ...]:
     words = text.split(" ")
     lines: list[str] = []
     current = ""
@@ -277,7 +305,7 @@ def wrap_text(text: str, font: pygame.font.Font, max_width: int) -> list[str]:
             current = word
     if current:
         lines.append(current)
-    return lines
+    return tuple(lines)
 
 
 def wrap_text_progressive(full_text: str, chars_to_show: int, font: pygame.font.Font, max_width: int) -> list[str]:
@@ -687,8 +715,9 @@ class Button:
             surf.blit(label, label_rect)
             return
         if self.image is not None:
-            image = pygame.transform.smoothscale(self.image, rect.size)
+            image = cached_smoothscale(self.image, rect.size)
             if not self.enabled:
+                image = image.copy()
                 image.fill((140, 140, 140), special_flags=pygame.BLEND_RGB_MULT)
             surf.blit(image, rect)
             draw_outlined_text(surf, font, self.label, rect.center, fill=TEXT_DARK, outline=PAPER_FILL, width=2)
@@ -894,6 +923,11 @@ class Game:
             load_image("background_faded.png", (VIRTUAL_W, VIRTUAL_H - 200  ), (90, 60, 40)), (VIRTUAL_W, VIRTUAL_H), anchor_y=0.0
         )
         self.logo = load_image("LOGO_food_court.png", (600, 460), (214, 122, 54))
+        # The intro animates the logo's size each frame; scaling from this copy
+        # instead of the full-resolution original keeps that cheap.
+        self.logo_intro = pygame.transform.smoothscale(
+            self.logo, (INTRO_LOGO_WIDTH, round(INTRO_LOGO_WIDTH * self.logo.get_height() / self.logo.get_width()))
+        )
         self.logo_small = pygame.transform.smoothscale(
             self.logo, (110, round(110 * self.logo.get_height() / self.logo.get_width()))
         )
@@ -1971,7 +2005,7 @@ class Game:
             round(VIRTUAL_W // 2 + (MENU_LOGO_CENTER[0] - VIRTUAL_W // 2) * ease),
             round(VIRTUAL_H // 2 + (MENU_LOGO_CENTER[1] - VIRTUAL_H // 2) * ease),
         )
-        logo = pygame.transform.smoothscale(self.logo, (logo_w, logo_h))
+        logo = cached_smoothscale(self.logo_intro, (logo_w, logo_h))
         surf.blit(logo, logo.get_rect(center=center))
 
     def _draw_credits(self, surf: pygame.Surface) -> None:
@@ -2009,7 +2043,7 @@ class Game:
         logo_w = MENU_LOGO_WIDTH
         logo_h = int(logo_w * self.logo.get_height() / self.logo.get_width())
         if draw_logo:
-            logo_scaled = pygame.transform.smoothscale(self.logo, (logo_w, logo_h))
+            logo_scaled = cached_smoothscale(self.logo, (logo_w, logo_h))
             surf.blit(logo_scaled, logo_scaled.get_rect(center=MENU_LOGO_CENTER))
 
     def _draw_how_to_play(self, surf: pygame.Surface) -> None:
@@ -2054,15 +2088,16 @@ class Game:
             if abs(offset) < 0.5 and self._level_unlocked(level) and self._is_hovered(rect):
                 rect = rect.inflate(10, 14)
             draw_shadow(surf, rect, radius=4, offset=(0, 6), alpha=80, blur=10)
-            ticket = pygame.transform.smoothscale(self._ticket_surface(level), rect.size)
+            ticket = cached_smoothscale(self._ticket_surface(level), rect.size)
             d = min(abs(offset), 2.0)
             k = min(int(d), 1)
             dim = round(CAROUSEL_DIM[k] + (CAROUSEL_DIM[k + 1] - CAROUSEL_DIM[k]) * (d - k))
+            surf.blit(ticket, rect)
             if dim:
+                # Shade on the screen, not the shared cached ticket.
                 shade = pygame.Surface(rect.size, pygame.SRCALPHA)
                 shade.fill((*OVERLAY_DARK, dim))
-                ticket.blit(shade, (0, 0))
-            surf.blit(ticket, rect)
+                surf.blit(shade, rect)
 
         # Infinite Mode banner card below
         inf_card = INFINITE_BUTTON_RECT
@@ -2163,7 +2198,7 @@ class Game:
                 continue
             card, button = self._add_card_layout(fid)
             draw_shadow(surf, card, radius=16, offset=(0, 6), alpha=70, blur=10)
-            surf.blit(pygame.transform.smoothscale(image, card.size), card)
+            surf.blit(cached_smoothscale(image, card.size), card)
             if fid in self.teaching_added:
                 draw_rounded_rect(surf, button, SECONDARY, 12, SECONDARY_DARK, 2)
                 draw_icon(surf, "check", (button.centerx - 50, button.centery), 24, TEXT_ON_DARK)
@@ -2186,10 +2221,11 @@ class Game:
         # The frames are stretched into the enlarged slots; no empty track is
         # drawn behind them.
         player_idx = min(len(self.health_frames) - 1, max(0, game_rules.HEALTH_MAX - self.health))
-        left_sprite = pygame.transform.flip(self.health_frames[player_idx], True, False)
+        left_sprite = self.health_frames[player_idx]
         target_h = bar_h
         left_w = max(1, round(left_sprite.get_width() * target_h / left_sprite.get_height()))
-        left_scaled = pygame.transform.smoothscale(left_sprite, (left_w, target_h))
+        # Scale the cached original, then flip the small result.
+        left_scaled = pygame.transform.flip(cached_smoothscale(left_sprite, (left_w, target_h)), True, False)
         # Keep the outside edge fixed so damage makes the bar recede inward.
         surf.blit(left_scaled, (left_track.left, left_track.top))
 
@@ -2201,7 +2237,7 @@ class Game:
         )
         right_sprite = self.health_frames[opponent_idx]
         right_w = max(1, round(right_sprite.get_width() * target_h / right_sprite.get_height()))
-        right_scaled = pygame.transform.smoothscale(right_sprite, (right_w, target_h))
+        right_scaled = cached_smoothscale(right_sprite, (right_w, target_h))
         # Mirror the player bar's inward retreat from the right screen edge.
         surf.blit(right_scaled, (right_track.right - right_w, right_track.top))
 
@@ -2220,7 +2256,7 @@ class Game:
 
         # Right: Opponent
         opp_portrait = self.enemy_portraits.get(self.enemy_name, self.enemy_portraits["Vegetable Peeler"])
-        opp_p = pygame.transform.smoothscale(opp_portrait, (HUD_PORTRAIT_D, HUD_PORTRAIT_D))
+        opp_p = cached_smoothscale(opp_portrait, (HUD_PORTRAIT_D, HUD_PORTRAIT_D))
         p_rect_right = opp_p.get_rect(center=HUD_PORTRAIT_RIGHT)
         draw_shadow(surf, p_rect_right, radius=HUD_PORTRAIT_D // 2, offset=(0, 4), alpha=80, blur=6)
         surf.blit(opp_p, p_rect_right)
@@ -2477,7 +2513,7 @@ class Game:
         else:
             tomato_img = self.tomato_frames[0]
         tomato_rect = self._fitted_card(tomato_img, (160, 160), (card.centerx, card.top + 175))
-        tomato_img = pygame.transform.smoothscale(tomato_img, tomato_rect.size)
+        tomato_img = cached_smoothscale(tomato_img, tomato_rect.size)
         surf.blit(tomato_img, tomato_rect)
 
         if title == "LEVEL COMPLETE":
@@ -2577,7 +2613,7 @@ class Game:
 
     def _blit_fitted(self, surf: pygame.Surface, image: pygame.Surface, slot: pygame.Rect) -> None:
         rect = self._fitted_rect(image, slot)
-        surf.blit(pygame.transform.smoothscale(image, rect.size), rect)
+        surf.blit(cached_smoothscale(image, rect.size), rect)
 
     def _compose_page(self, card_ids: tuple[int | None, int | None], size: tuple[int, int]) -> pygame.Surface:
         key = ("page", card_ids, size)
@@ -2712,7 +2748,7 @@ class Game:
             if self._is_hovered(rect):
                 grown = pygame.Rect(0, 0, round(rect.width * HOVER_SCALE), round(rect.height * HOVER_SCALE))
                 grown.center = rect.center
-                surf.blit(pygame.transform.smoothscale(self.dictionary_cards[fid], grown.size), grown)
+                surf.blit(cached_smoothscale(self.dictionary_cards[fid], grown.size), grown)
                 return
 
     def _draw_zoomed_card(self, surf: pygame.Surface) -> None:
@@ -2753,7 +2789,7 @@ class Game:
         paper = SETTINGS_PAPER_RECT
         draw_card(surf, paper, radius=RADIUS_PANEL)
 
-        tomato = pygame.transform.smoothscale(self.tomato_frames[0], (96, 96))
+        tomato = cached_smoothscale(self.tomato_frames[0], (96, 96))
         surf.blit(tomato, tomato.get_rect(center=(paper.centerx, paper.top + 76)))
         draw_text(surf, self.fonts["title_bold"], "Settings", INK, center=(paper.centerx, paper.top + 150))
         pygame.draw.line(surf, LINE, (paper.left + 36, paper.top + 176), (paper.right - 36, paper.top + 176), 1)
