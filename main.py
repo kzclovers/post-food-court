@@ -2820,6 +2820,9 @@ class Game:
 
 
 async def main() -> None:
+    # A larger mixer buffer keeps browser audio from underrunning (crackling)
+    # when a frame runs long.
+    pygame.mixer.pre_init(44100, -16, 2, 4096 if sys.platform == "emscripten" else 1024)
     pygame.init()
     pygame.display.set_caption("Food Court")
     # Let SDL scale the virtual canvas and synchronize presentation to the
@@ -2841,7 +2844,7 @@ async def main() -> None:
     running = True
     mouse_press_seen = False
     while running:
-        dt = clock.tick(120) / 1000.0
+        dt = clock.tick(60 if sys.platform == "emscripten" else 120) / 1000.0
         window_size = pygame.display.get_window_size()
         portrait = window_size[1] > window_size[0]
 

@@ -58,6 +58,7 @@ class AudioManager:
         self.current_track: str | None = None  # the track requested last
         self.playing_track: str | None = None  # the track actually on the channel
         self.music_level = 0.0  # fade multiplier, 0..1
+        self._applied_music_volume: float | None = None
         self.music_channel: pygame.mixer.Channel | None = None
         self.music_sounds: dict[str, pygame.mixer.Sound] = {}
         self.sounds: dict[str, pygame.mixer.Sound] = {}
@@ -155,8 +156,13 @@ class AudioManager:
         return sound
 
     def _apply_music_volume(self) -> None:
-        if self.music_channel is not None:
-            self.music_channel.set_volume(self.music_volume * MUSIC_GAIN * self.music_level)
+        if self.music_channel is None:
+            return
+        volume = self.music_volume * MUSIC_GAIN * self.music_level
+        # Only push changes; per-frame set_volume calls cause zipper noise in the browser.
+        if volume != self._applied_music_volume:
+            self.music_channel.set_volume(volume)
+            self._applied_music_volume = volume
 
     def set_music_volume(self, volume: float) -> None:
         self.music_volume = clamp_volume(volume)
