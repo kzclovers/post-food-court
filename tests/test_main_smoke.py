@@ -58,6 +58,7 @@ class GameSmokeTests(unittest.TestCase):
                 self.game._select_level(level)
             elif state == "TEACHING":
                 self.game.on_add_to_dictionary()
+                self.game._start_warmup()
             elif state == "GAMEPLAY":
                 warmup = self.game.phase == "WARMUP" and not self.game.infinite
                 self.game.resolve_answer(True if warmup else answer_correct, timeout=False)
@@ -78,6 +79,7 @@ class GameSmokeTests(unittest.TestCase):
         self.game._select_level(1)
         for _ in range(3):
             self.game.on_add_to_dictionary()
+        self.game._start_warmup()
 
     def _reveal_papers(self):
         self.game.update(self.main.DIALOGUE_CENTER_SECONDS + 0.01)
@@ -128,6 +130,10 @@ class GameSmokeTests(unittest.TestCase):
 
         self.game.on_add_to_dictionary(1)
         self.game.on_add_to_dictionary(3)
+        self.assertEqual(self.game.state, "TEACHING")
+        self.game.layout_buttons()
+        self.assertIn("Start Level", [b.label for b in self.game.buttons])
+        self.game._start_warmup()
         self.assertEqual(self.game.state, "GAMEPLAY")
         self.assertEqual(self.game.phase, "WARMUP")
         self.assertEqual(sorted(self.game.warmup_queue), [1, 2, 3])
@@ -177,6 +183,7 @@ class GameSmokeTests(unittest.TestCase):
         self.game._select_level(2)
         for _ in range(3):
             self.game.on_add_to_dictionary()
+        self.game._start_warmup()
         self.game.phase = "ROUND"
         self.assertEqual(self.game._quizzable_ids(), [1, 2, 3, 4, 5, 6])
 
@@ -198,6 +205,7 @@ class GameSmokeTests(unittest.TestCase):
         self.assertEqual(self.game.teaching_ids, [13, 14, 15])
         for _ in range(3):
             self.game.on_add_to_dictionary()
+        self.game._start_warmup()
         self._reveal_papers()
         self.assertEqual(len(self.game.papers), 8)
         self.game.draw(self.canvas)

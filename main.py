@@ -69,6 +69,7 @@ OVERLAY_DARK = (16, 10, 8)
 
 FLASH_DURATION = 0.5
 GAVEL_DURATION = 1.2
+DISMISS_SECONDS = 1.8
 TOAST_DURATION = 2.0
 FEEDBACK_ENTER_SECONDS = 0.3
 FEEDBACK_EXIT_SECONDS = 0.3
@@ -130,6 +131,13 @@ CAROUSEL_SPACING = (0, 330, 560)  # x offset of the center, neighbor and far tic
 CAROUSEL_SCALE = (1.0, 0.72, 0.52)
 CAROUSEL_DIM = (0, 70, 130)  # darkening alpha for tickets off center
 CAROUSEL_SPEED = 10.0
+TEACH_CARD_CENTER = (VIRTUAL_W // 2, 382)
+TEACH_CARD_MAX = (560, 400)  # center card; neighbors shrink to CAROUSEL_SCALE
+TEACH_SPACING = (0, 380, 640)  # neighbors tuck behind the center card, like the level tickets
+TEACH_ARROW_RECTS = (
+    pygame.Rect(TEACH_CARD_CENTER[0] - 340, TEACH_CARD_CENTER[1] - 28, 56, 56),
+    pygame.Rect(TEACH_CARD_CENTER[0] + 284, TEACH_CARD_CENTER[1] - 28, 56, 56),
+)
 CAROUSEL_ARROW_RECTS = (
     pygame.Rect(TICKET_CENTER[0] - TICKET_SIZE[0] // 2 - 70, TICKET_CENTER[1] - 28, 56, 56),
     pygame.Rect(TICKET_CENTER[0] + TICKET_SIZE[0] // 2 + 14, TICKET_CENTER[1] - 28, 56, 56),
@@ -988,6 +996,8 @@ class Game:
         self.phase = "WARMUP"  # main levels: "WARMUP" then "ROUND"
         self.teaching_ids: list[int] = []
         self.teaching_added: set[int] = set()
+        self.teaching_index = 0
+        self.teaching_pos = 0.0
         self.warmup_queue: list[int] = []
         self.paused = False
         self.fail_reason = ""
@@ -1008,6 +1018,7 @@ class Game:
         self.tomato_flash = 0.0
         self.toasts: list[list] = []
         self.gavel_timer = 0.0
+        self.dismiss_timer = 0.0
         self.gavel_target = "MENU"
         self.infinite_final_correct = 0
         self.infinite_is_best = False
@@ -1192,6 +1203,8 @@ class Game:
         self.enemy_name = game_data.enemy_for_level(level)
         self.teaching_ids = list(self.fallacy_ids)
         self.teaching_added = set()
+        self.teaching_index = 0
+        self.teaching_pos = 0.0
         self.warmup_queue = []
         if all(fid in self._dictionary_ids() for fid in self.fallacy_ids):
             # Nothing new to learn, so skip the cards and the warm-up.
@@ -1249,7 +1262,22 @@ class Game:
         self.teaching_added.add(fid)
         self.progress.add_to_dictionary(fid)
         self.audio.play_sfx("dictionary")
-        if len(self.teaching_added) == len(self.teaching_ids):
+        # Slide on to the next card still waiting to be added.
+        for step in range(1, len(self.teaching_ids)):
+            nxt = (self.teaching_index + step) % len(self.teaching_ids)
+            if self.teaching_ids[nxt] not in self.teaching_added:
+                self.teaching_index = nxt
+                break
+
+    def _teaching_done(self) -> bool:
+        return bool(self.teaching_ids) and len(self.teaching_added) == len(self.teaching_ids)
+
+    def _scroll_teaching(self, step: int) -> None:
+        self.teaching_index = max(0, min(len(self.teaching_ids) - 1, self.teaching_index + step))
+
+    def _start_warmup(self) -> None:
+        """Start Level: every new card is in the dictionary, so warm up."""
+        if self.state == "TEACHING" and self._teaching_done():
             self.warmup_queue = list(self.teaching_ids)
             self.rng.shuffle(self.warmup_queue)
             self.phase = "WARMUP"
@@ -1474,7 +1502,10 @@ class Game:
         self.gavel_target = target
         self.gavel_timer = GAVEL_DURATION
         self.state = "GAVEL"
-        self.audio.play_sfx("knife_hit")
+        # A won level first shows the "Case Dismissed" ribbon, then the gavel falls.
+        self.dismiss_timer = DISMISS_SECONDS if target == "LEVEL_COMPLETE" else 0.0
+        if self.dismiss_timer <= 0:
+            self.audio.play_sfx("knife_hit")
 
     def finish_infinite(self) -> None:
         self.infinite_final_correct = self.infinite_correct
@@ -1523,6 +1554,8 @@ class Game:
         if track is not None:
             self.audio.play_music(track)
         self.audio.update(dt)
+        if self.state == "TEACHING":
+            self.teaching_pos += (self.teaching_index - self.teaching_pos) * min(1.0, dt * CAROUSEL_SPEED)
         if self.state == "LEVEL_SELECT":
             self.carousel_pos += (self.carousel_index - self.carousel_pos) * min(1.0, dt * CAROUSEL_SPEED)
         if self.state == "INTRO":
@@ -1579,6 +1612,10 @@ class Game:
                 self.review_age += dt
             else:
                 self.feedback_timer = max(0.0, self.feedback_timer - dt)
+        elif self.state == "GAVEL" and self.dismiss_timer > 0:
+            self.dismiss_timer -= dt
+            if self.dismiss_timer <= 0:
+                self.audio.play_sfx("knife_hit")
         elif self.state == "GAVEL":
             self.gavel_timer -= dt
             if self.gavel_timer <= 0:
@@ -1679,13 +1716,27 @@ class Game:
                     enabled = True
                 self.buttons.append(Button(self._ticket_rect(offset), "", action, enabled=enabled, style="hidden"))
         elif self.state == "TEACHING":
-            for fid in self.teaching_ids:
-                if fid in self.teaching_added:
+            if self.teaching_index > 0:
+                self.buttons.append(Button(TEACH_ARROW_RECTS[0], "", lambda: self._scroll_teaching(-1),
+                                           style="icon", icon="prev"))
+            if self.teaching_index < len(self.teaching_ids) - 1:
+                self.buttons.append(Button(TEACH_ARROW_RECTS[1], "", lambda: self._scroll_teaching(1),
+                                           style="icon", icon="next"))
+            for i, fid in enumerate(self.teaching_ids):
+                offset = i - self.teaching_index
+                if abs(offset) == 1:
+                    card, _button = self._add_card_layout(fid)
+                    self.buttons.append(Button(card, "", lambda d=offset: self._scroll_teaching(d), style="hidden"))
+                if offset != 0 or fid in self.teaching_added:
                     continue
                 _card, button_rect = self._add_card_layout(fid)
                 self.buttons.append(
                     Button(button_rect, "Add to Dictionary", lambda fid=fid: self.on_add_to_dictionary(fid), radius=14)
                 )
+            if self._teaching_done():
+                start = pygame.Rect(0, 0, 260, 56)
+                start.center = (VIRTUAL_W // 2, 670)
+                self.buttons.append(Button(start, "Start Level", self._start_warmup, style="pill", radius=12))
         elif self.state in ("LEVEL_COMPLETE", "LEVEL_FAILED", "INFINITE_RESULTS"):
             home = pygame.Rect(460, 440, 160, 52)
             other = pygame.Rect(640, 440, 180, 52)
@@ -1872,6 +1923,12 @@ class Game:
                 self._scroll_carousel(1)
             elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
                 self._select_level(sorted(game_data.LEVELS)[self.carousel_index])
+            return
+        if self.state == "TEACHING" and event.type == pygame.KEYDOWN and not self.show_dictionary and not self.paused:
+            if event.key in (pygame.K_LEFT, pygame.K_a):
+                self._scroll_teaching(-1)
+            elif event.key in (pygame.K_RIGHT, pygame.K_d):
+                self._scroll_teaching(1)
             return
         if self.state != "SETTINGS" or not self.dev_input_active:
             return
@@ -2069,7 +2126,10 @@ class Game:
             self._draw_gameplay(surf)
         elif self.state == "GAVEL":
             self._draw_gameplay_frozen(surf)
-            self._draw_gavel(surf)
+            if self.dismiss_timer > 0:
+                self._draw_dismiss_banner(surf)
+            else:
+                self._draw_gavel(surf)
         elif self.state == "LEVEL_COMPLETE":
             self._draw_result_card(surf, "LEVEL COMPLETE", CORRECT_COLOR)
         elif self.state == "LEVEL_FAILED":
@@ -2302,30 +2362,56 @@ class Game:
         rect.center = center
         return rect
 
-    def _add_card_layout(self, fid: int) -> tuple[pygame.Rect, pygame.Rect]:
-        image = self.add_cards[fid]
-        count = max(1, len(self.teaching_ids))
+    def _teaching_offset(self, fid: int) -> float:
         index = self.teaching_ids.index(fid) if fid in self.teaching_ids else 0
-        slot_w = (VIRTUAL_W - 60) // count
-        center = (30 + slot_w * index + slot_w // 2, 360)
-        card = self._fitted_card(image, (slot_w - 20, 390), center)
-        button = pygame.Rect(0, 0, card.width - 24, 50)
-        button.midtop = (card.centerx, card.bottom + 16)
+        return index - self.teaching_pos
+
+    def _add_card_layout(self, fid: int) -> tuple[pygame.Rect, pygame.Rect]:
+        """Carousel slot for a teaching card: big in the middle, smaller to the sides."""
+        image = self.add_cards[fid]
+        offset = self._teaching_offset(fid)
+        d = min(abs(offset), 2.0)
+        i = min(int(d), 1)
+        t = d - i
+        x = TEACH_SPACING[i] + (TEACH_SPACING[i + 1] - TEACH_SPACING[i]) * t
+        scale = CAROUSEL_SCALE[i] + (CAROUSEL_SCALE[i + 1] - CAROUSEL_SCALE[i]) * t
+        center = (round(TEACH_CARD_CENTER[0] + x * (1 if offset >= 0 else -1)), TEACH_CARD_CENTER[1])
+        card = self._fitted_card(image, (round(TEACH_CARD_MAX[0] * scale), round(TEACH_CARD_MAX[1] * scale)), center)
+        button = pygame.Rect(0, 0, 280, 50)
+        button.midtop = (card.centerx, card.bottom + 14)
         return card, button
 
     def _draw_teaching_cards(self, surf: pygame.Surface) -> None:
         dim_screen(surf, OVERLAY_DARK, 180)
         draw_shadow_text(surf, self.fonts["title_bold"], "New Fallacies!", TEXT_ON_DARK, offset=2, alpha=160, center=(VIRTUAL_W // 2, 120))
-        added_txt = f"Add all three to your dictionary to start the warm-up ({len(self.teaching_added)}/{len(self.teaching_ids)})"
+        if self._teaching_done():
+            added_txt = "All cards added! Press Start Level to begin the warm-up"
+        else:
+            added_txt = f"Add every card to your dictionary to start the level ({len(self.teaching_added)}/{len(self.teaching_ids)})"
         draw_shadow_text(surf, self.fonts["body"], added_txt, TEXT_ON_DARK, offset=1, alpha=140, center=(VIRTUAL_W // 2, 164))
 
-        for fid in self.teaching_ids:
+        # Draw far cards first so the centered one sits on top.
+        order = sorted(self.teaching_ids, key=lambda f: -abs(self._teaching_offset(f)))
+        for fid in order:
             image = self.add_cards.get(fid)
             if image is None:
+                continue
+            offset = abs(self._teaching_offset(fid))
+            if offset > 2.4:
                 continue
             card, button = self._add_card_layout(fid)
             draw_shadow(surf, card, radius=16, offset=(0, 6), alpha=70, blur=10)
             blit_mostly_opaque(surf, cached_smoothscale(image, card.size), card.topleft)
+            d = min(offset, 2.0)
+            k = min(int(d), 1)
+            dim = round(CAROUSEL_DIM[k] + (CAROUSEL_DIM[k + 1] - CAROUSEL_DIM[k]) * (d - k))
+            if dim:
+                # Same shading as the level tickets: darker, no outline.
+                shade = pygame.Surface(card.size, pygame.SRCALPHA)
+                shade.fill((*OVERLAY_DARK, dim))
+                surf.blit(shade, card)
+            if offset > 0.05:
+                continue
             if fid in self.teaching_added:
                 draw_rounded_rect(surf, button, SECONDARY, 12, SECONDARY_DARK, 2)
                 draw_icon(surf, "check", (button.centerx - 50, button.centery), 24, TEXT_ON_DARK)
@@ -2554,6 +2640,20 @@ class Game:
             x_offset = -image.get_width() + (image.get_width() - 24) * settle
         elif elapsed > ANNOUNCE_SECONDS - FEEDBACK_EXIT_SECONDS:
             t = (elapsed - (ANNOUNCE_SECONDS - FEEDBACK_EXIT_SECONDS)) / FEEDBACK_EXIT_SECONDS
+            x_offset = -24 + (VIRTUAL_W + 24) * t ** 3
+        else:
+            x_offset = -24
+        surf.blit(image, (round(x_offset), 150 - image.get_height() // 2))
+
+    def _draw_dismiss_banner(self, surf: pygame.Surface) -> None:
+        image = self._banner_surface("CASE DISMISSED", CORRECT_COLOR)
+        elapsed = DISMISS_SECONDS - self.dismiss_timer
+        if elapsed < FEEDBACK_ENTER_SECONDS:
+            u = elapsed / FEEDBACK_ENTER_SECONDS - 1
+            settle = 1 + 1.18 * u ** 3 + 0.18 * u ** 2
+            x_offset = -image.get_width() + (image.get_width() - 24) * settle
+        elif elapsed > DISMISS_SECONDS - FEEDBACK_EXIT_SECONDS:
+            t = (elapsed - (DISMISS_SECONDS - FEEDBACK_EXIT_SECONDS)) / FEEDBACK_EXIT_SECONDS
             x_offset = -24 + (VIRTUAL_W + 24) * t ** 3
         else:
             x_offset = -24
