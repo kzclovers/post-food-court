@@ -911,6 +911,10 @@ class Paper:
     def rect(self) -> pygame.Rect:
         return pygame.Rect(int(self.x), int(self.y), self.w, self.h)
 
+    def clamp(self) -> None:
+        self.x = min(max(self.x, self.bounds.left), self.bounds.right - self.w)
+        self.y = min(max(self.y, self.bounds.top), self.bounds.bottom - self.h)
+
     def draw(self, surf: pygame.Surface, font: pygame.font.Font) -> None:
         r = self.rect()
         if self.background is not None:
@@ -932,6 +936,56 @@ class Paper:
                 width=2,
             )
             y += line_h
+
+
+def _overlap(a: Paper, b: Paper, axis: str) -> tuple[float, int]:
+    """How far two papers overlap along an axis, and which way pushes b off a."""
+    if axis == "x":
+        d = (b.x + b.w / 2) - (a.x + a.w / 2)
+        return (a.w + b.w) / 2 - abs(d), 1 if d >= 0 else -1
+    d = (b.y + b.h / 2) - (a.y + a.h / 2)
+    return (a.h + b.h) / 2 - abs(d), 1 if d >= 0 else -1
+
+
+def _push_apart(a: Paper, b: Paper, axis: str) -> None:
+    amount, sign = _overlap(a, b, axis)
+    setattr(a, axis, getattr(a, axis) - amount / 2 * sign)
+    setattr(b, axis, getattr(b, axis) + amount / 2 * sign)
+    a.clamp()
+    b.clamp()
+    # A paper pinned on a wall can't move, so its partner takes the rest.
+    left, _sign = _overlap(a, b, axis)
+    if left > 0:
+        setattr(b, axis, getattr(b, axis) + left * sign)
+        b.clamp()
+        left, _sign = _overlap(a, b, axis)
+        setattr(a, axis, getattr(a, axis) - left * sign)
+        a.clamp()
+
+
+def separate_papers(papers: list[Paper], passes: int = 6) -> None:
+    """Push overlapping papers apart and bounce them like equal-mass boxes."""
+    # Several passes so crowded papers (up to 8 at once) fully settle apart.
+    for _ in range(passes):
+        for i, a in enumerate(papers):
+            for b in papers[i + 1:]:
+                overlap_x, sign_x = _overlap(a, b, "x")
+                overlap_y, sign_y = _overlap(a, b, "y")
+                if overlap_x <= 0 or overlap_y <= 0:
+                    continue
+                # Resolve along the shallower axis, then swap that velocity component.
+                axis = "x" if overlap_x < overlap_y else "y"
+                sign = sign_x if axis == "x" else sign_y
+                _push_apart(a, b, axis)
+                velocity = "v" + axis
+                va, vb = getattr(a, velocity), getattr(b, velocity)
+                if (vb - va) * sign < 0:
+                    setattr(a, velocity, vb)
+                    setattr(b, velocity, va)
+                # Wedged against a wall on that axis: slide apart the other way instead.
+                if _overlap(a, b, "x")[0] > 0 and _overlap(a, b, "y")[0] > 0:
+                    _push_apart(a, b, "y" if axis == "x" else "x")
+
 
 class Game:
     def __init__(self) -> None:
@@ -1404,6 +1458,17 @@ class Game:
             Paper(text, is_correct, PAPER_BOUNDS, self.rng, self.fallacy_paper_backgrounds)
             for text, is_correct in entries
         ]
+        # Deal papers into random cells of a grid so none start overlapping.
+        if self.papers:
+            pw, ph = self.papers[0].w, self.papers[0].h
+            cols = max(1, PAPER_BOUNDS.width // pw)
+            rows = max(1, PAPER_BOUNDS.height // ph)
+            cell_w, cell_h = PAPER_BOUNDS.width / cols, PAPER_BOUNDS.height / rows
+            cells = self.rng.sample(range(cols * rows), min(len(self.papers), cols * rows))
+            for paper, cell in zip(self.papers, cells):
+                col, row = cell % cols, cell // cols
+                paper.x = PAPER_BOUNDS.left + col * cell_w + self.rng.uniform(0, cell_w - pw)
+                paper.y = PAPER_BOUNDS.top + row * cell_h + self.rng.uniform(0, cell_h - ph)
 
     def handle_paper_click(self, pos: tuple[int, int]) -> bool:
         if self.state != "GAMEPLAY" or self.answered or self.dialogue_phase not in ("DONE", "ACTIVE"):
@@ -1483,7 +1548,6 @@ class Game:
 
         if not self.infinite and self.enemy_health <= 0:
             self.progress.complete_level(self.level)
-            self.toasts.append(["Judge: " + JUDGE_WIN_STATEMENT, TOAST_DURATION * 2])
             self.start_gavel("LEVEL_COMPLETE")
             return
 
@@ -1606,6 +1670,7 @@ class Game:
                 else:
                     for paper in self.papers:
                         paper.update(dt)
+                    separate_papers(self.papers)
         elif self.state == "FEEDBACK":
             self._advance_dialogue_text(dt)
             if self.review_fallacy_id is not None:
@@ -2248,17 +2313,22 @@ class Game:
             ("4. Win the Trail", "Correct answers damage the opponent; wrong answers or running out of time damage you. Complete the first level to unlock Infinite Mode!"),
         ]
 
-        y = panel.top + 94
-        for title, desc in steps:
+        chip_h, desc_gap, line_h = 45, 12, 30
+        wrapped_steps = [wrap_text(desc, self.fonts["body"], panel.width - 120) for _title, desc in steps]
+        heights = [chip_h + desc_gap + len(w) * line_h for w in wrapped_steps]
+        # Spread the steps evenly over the space below the title rule.
+        top, bottom = panel.top + 100, panel.bottom - 30
+        gap = max(16, (bottom - top - sum(heights)) / max(1, len(steps) - 1))
+        y = top
+        for (title, _desc), wrapped, height in zip(steps, wrapped_steps, heights):
             # Bullet badge
-            chip_rect = pygame.Rect(panel.left + 48, y, 420, 45)
+            chip_rect = pygame.Rect(panel.left + 48, round(y), 420, chip_h)
             draw_rounded_rect(surf, chip_rect, SURFACE_ALT, radius=6, border=LINE, border_width=1)
             draw_text(surf, self.fonts["body_bold"], title, PRIMARY, midleft=(chip_rect.left + 12, chip_rect.centery))
-            
-            wrapped = wrap_text(desc, self.fonts["body"], panel.width - 120)
+
             for j, line in enumerate(wrapped):
-                draw_text(surf, self.fonts["body"], line, INK, topleft=(panel.left + 52, y + 34 + j * 24))
-            y += 38 + len(wrapped) * 24 + 10
+                draw_text(surf, self.fonts["body"], line, INK, topleft=(panel.left + 52, chip_rect.bottom + desc_gap + j * line_h))
+            y += height + gap
 
     def _draw_level_select(self, surf: pygame.Surface) -> None:
         # Title
@@ -2297,14 +2367,17 @@ class Game:
         draw_card(surf, inf_card, radius=18, fill=bg_col, border=b_col)
 
         inf_title_col = INK if inf_avail else INK_SOFT
-        draw_text(surf, self.fonts["large_bold"], "Infinite Mode", inf_title_col, topleft=(inf_card.left + 32, inf_card.top + 20))
+        # Stack the title and hint as one block centered in the card.
+        title_h = self.fonts["large_bold"].get_height()
+        hint_top = inf_card.centery - (title_h + 4 + self.fonts["small"].get_height()) // 2 + title_h + 4
+        draw_text(surf, self.fonts["large_bold"], "Infinite Mode", inf_title_col, bottomleft=(inf_card.left + 32, hint_top - 4))
         if inf_avail:
             best = self.progress.infinite_best_correct.get(INFINITE_SAVE_KEY, 0)
             hint = f"Endless survival | Best: {best} correct" if best else "Endless survival trial"
-            draw_text(surf, self.fonts["small"], hint, INK_SOFT, topleft=(inf_card.left + 34, inf_card.top + 60))
+            draw_text(surf, self.fonts["small"], hint, INK_SOFT, topleft=(inf_card.left + 34, hint_top))
             draw_chip(surf, self.fonts["body_bold"], "PLAY ∞", fill=PRIMARY, color=TEXT_ON_DARK, center=(inf_card.right - 90, inf_card.centery))
         else:
-            draw_text(surf, self.fonts["small"], "Defeat Level 1 to unlock Infinite Mode", INK_SOFT, topleft=(inf_card.left + 34, inf_card.top + 50))
+            draw_text(surf, self.fonts["small"], "Defeat Level 1 to unlock Infinite Mode", INK_SOFT, topleft=(inf_card.left + 34, hint_top))
             draw_chip(surf, self.fonts["body_bold"], "LOCKED", fill=(180, 170, 160), color=TEXT_ON_DARK, center=(inf_card.right - 90, inf_card.centery))
 
     def _ticket_surface(self, level: int) -> pygame.Surface:
