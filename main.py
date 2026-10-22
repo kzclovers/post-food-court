@@ -144,7 +144,7 @@ TICKET_INK = (84, 84, 84)
 INFINITE_BUTTON_RECT = pygame.Rect(330, 580, 620, 100)
 RETURN_BUTTON_RECT = pygame.Rect(32, 28, 124, 48)
 PAUSE_BUTTON_RECT = pygame.Rect(HUD_TIMER_CENTER[0] + 50, 40, 44, 44)
-PAUSE_POPUP_RECT = pygame.Rect(460, 196, 360, 320)
+PAUSE_POPUP_RECT = pygame.Rect(440, 140, 400, 440)
 DICTIONARY_HUD_RECT = pygame.Rect(HUD_TIMER_CENTER[0] - 100, 40, 44, 44)
 
 INFINITE_SAVE_KEY = 0  # infinite mode is one shared run, not per level
@@ -173,11 +173,17 @@ INFO_BUTTON_RECT = pygame.Rect(SETTINGS_PAPER_RECT.left + 16, SETTINGS_PAPER_REC
 CREDITS_LINES = (
     ("Developers", "Lina, Sophii, Ryan, Kenzie"),
     ("Audio", "Courtesy of the YouTube Studio Audio Library"),
-    ("Event", "DubHacks 2026 Project"),
+    ("Event", "DubHacks 2026"),
 )
 SETTINGS_ROW_RECTS = [pygame.Rect(472, 250, 336, 50), pygame.Rect(472, 318, 336, 50)]
 # Slider track per settings row: the label sits above, the track below it.
 SETTINGS_SLIDER_RECTS = [pygame.Rect(r.left + 8, r.bottom - 12, r.width - 16, 8) for r in SETTINGS_ROW_RECTS]
+# The pause pop-up repeats the same two volume rows.
+PAUSE_ROW_RECTS = [pygame.Rect(472, 254, 336, 50), pygame.Rect(472, 322, 336, 50)]
+PAUSE_SLIDER_RECTS = [pygame.Rect(r.left + 8, r.bottom - 12, r.width - 16, 8) for r in PAUSE_ROW_RECTS]
+# Gold ribbon announcing the warm-up and the official round.
+ANNOUNCE_COLOR = (222, 146, 48)
+ANNOUNCE_SECONDS = 1.8
 # Music track per level; infinite mode uses its own theme.
 LEVEL_MUSIC = {1: "veggie_skinner", 2: "veggie_skinner", 3: "knife", 4: "knife", 5: "boiling_pot", 6: "boiling_pot"}
 LEVEL_MUSIC_STATES = ("TEACHING", "GAMEPLAY", "FEEDBACK", "GAVEL")
@@ -673,7 +679,12 @@ class Button:
             draw_rounded_rect(surf, rect, fill, self.radius, border, 2)
             text_col = PRIMARY if (self.hovered and self.enabled) else INK
             label = font.render(self.label, True, text_col if self.enabled else INK_SOFT)
-            surf.blit(label, label.get_rect(center=rect.center))
+            label_rect = label.get_rect(center=rect.center)
+            if self.icon:
+                icon_size = round(rect.height * 0.45)
+                label_rect.centerx += (icon_size + 8) // 2
+                draw_icon(surf, self.icon, (label_rect.left - 8 - icon_size // 2, rect.centery), icon_size, text_col)
+            surf.blit(label, label_rect)
             return
         if self.image is not None:
             image = pygame.transform.smoothscale(self.image, rect.size)
@@ -852,6 +863,8 @@ class Game:
         self.infinite_final_correct = 0
         self.infinite_is_best = False
         self.intro_t = 0.0
+        self.announce_text = ""
+        self.announce_timer = 0.0
         self.dialogue_phase = "DONE"
         self.dialogue_timer = 0.0
         self.dialogue_speaker = ""
@@ -988,6 +1001,7 @@ class Game:
             )
         self.question_index = 0
         self.infinite_correct = 0
+        self.announce_timer = 0.0
         self.papers = []
         self.enemy_losses = 0
         self.enemy_flash = 0.0
@@ -1025,6 +1039,7 @@ class Game:
         if all(fid in self._dictionary_ids() for fid in self.fallacy_ids):
             # Nothing new to learn, so skip the cards and the warm-up.
             self.phase = "ROUND"
+            self._announce("OFFICIAL ROUND — FIGHT!")
             self.next_question()
             return
         self.phase = "WARMUP"
@@ -1081,7 +1096,7 @@ class Game:
             self.warmup_queue = list(self.teaching_ids)
             self.rng.shuffle(self.warmup_queue)
             self.phase = "WARMUP"
-            self.toasts.append(["Warm-up: no timer, no damage.", TOAST_DURATION])
+            self._announce("WARM-UP: NO TIMER, NO DAMAGE")
             self.next_question()
 
     # -- questions ---------------------------------------------------
@@ -1289,9 +1304,14 @@ class Game:
 
         if not self.infinite and self.phase == "WARMUP" and not self.warmup_queue:
             self.phase = "ROUND"
-            self.toasts.append(["Official round -- fight!", TOAST_DURATION])
+            self._announce("OFFICIAL ROUND — FIGHT!")
 
         self.next_question()
+
+    def _announce(self, text: str) -> None:
+        """Slide a gold ribbon across; the next question waits until it leaves."""
+        self.announce_text = text
+        self.announce_timer = ANNOUNCE_SECONDS
 
     def start_gavel(self, target: str) -> None:
         self.gavel_target = target
@@ -1380,7 +1400,9 @@ class Game:
         if self.paused:
             return
         self.chef.update(dt)
-        if self.state == "GAMEPLAY" and (not self.answered or self.dialogue_target_phase == "ACTIVE"):
+        if self.announce_timer > 0:
+            self.announce_timer = max(0.0, self.announce_timer - dt)
+        elif self.state == "GAMEPLAY" and (not self.answered or self.dialogue_target_phase == "ACTIVE"):
             if self.dialogue_phase not in ("DONE", "ACTIVE"):
                 self._advance_dialogue(dt)
             else:
@@ -1453,9 +1475,9 @@ class Game:
 
         if self.paused:
             cont = pygame.Rect(0, 0, 260, 58)
-            cont.center = (PAUSE_POPUP_RECT.centerx, PAUSE_POPUP_RECT.top + 150)
+            cont.center = (PAUSE_POPUP_RECT.centerx, PAUSE_POPUP_RECT.top + 296)
             leave = cont.copy()
-            leave.center = (PAUSE_POPUP_RECT.centerx, PAUSE_POPUP_RECT.top + 230)
+            leave.center = (PAUSE_POPUP_RECT.centerx, PAUSE_POPUP_RECT.top + 372)
             self.buttons.append(Button(cont, "Continue", self._resume))
             self.buttons.append(Button(leave, "Exit Game", self._exit_level))
             return
@@ -1505,12 +1527,13 @@ class Game:
                     continue
                 _card, button_rect = self._add_card_layout(fid)
                 self.buttons.append(
-                    Button(button_rect, "Add To Your Dictionary", lambda fid=fid: self.on_add_to_dictionary(fid), radius=14)
+                    Button(button_rect, "Add to Dictionary", lambda fid=fid: self.on_add_to_dictionary(fid), radius=14)
                 )
         elif self.state in ("LEVEL_COMPLETE", "LEVEL_FAILED", "INFINITE_RESULTS"):
             home = pygame.Rect(460, 440, 160, 52)
             other = pygame.Rect(640, 440, 180, 52)
-            self.buttons.append(Button(home, "Home", self._go_home, style="secondary", radius=12))
+            self.buttons.append(Button(home, "Return", self._open_level_select, style="secondary", radius=12,
+                                       icon="return"))
             if self.state == "LEVEL_COMPLETE":
                 self.buttons.append(Button(other, "Next Level", self._next_level, radius=12))
             elif self.state == "LEVEL_FAILED":
@@ -1709,8 +1732,19 @@ class Game:
             self.dev_error = True
         self.dev_input = ""
 
+    def _volume_rows(self) -> tuple[list[pygame.Rect], list[pygame.Rect]] | None:
+        """Row and track rects of the volume sliders on screen, if any."""
+        if self.state == "SETTINGS":
+            return SETTINGS_ROW_RECTS, SETTINGS_SLIDER_RECTS
+        if self.paused:
+            return PAUSE_ROW_RECTS, PAUSE_SLIDER_RECTS
+        return None
+
     def _set_slider(self, index: int, x: float) -> None:
-        track = SETTINGS_SLIDER_RECTS[index]
+        rows = self._volume_rows()
+        if rows is None:
+            return
+        track = rows[1][index]
         volume = max(0.0, min(1.0, (x - track.left) / track.width))
         if index == 0:
             self.audio.set_music_volume(volume)
@@ -1724,8 +1758,9 @@ class Game:
 
     def handle_press(self, pos: tuple[int, int]) -> bool:
         """Handle press-time interactions and report whether one consumed it."""
-        if self.state == "SETTINGS":
-            for i, row in enumerate(SETTINGS_ROW_RECTS):
+        rows = self._volume_rows()
+        if rows is not None:
+            for i, row in enumerate(rows[0]):
                 if row.inflate(0, 10).collidepoint(pos):
                     self.dragging_slider = i
                     self._set_slider(i, pos[0])
@@ -1887,6 +1922,8 @@ class Game:
         # cannot cover it during the feedback state.
         if self.state == "FEEDBACK":
             self._draw_feedback_banner(surf)
+        if self.announce_timer > 0 and self.state == "GAMEPLAY":
+            self._draw_announce_banner(surf)
 
     def _is_hovered(self, rect: pygame.Rect) -> bool:
         return rect.collidepoint(self.mouse_pos)
@@ -1913,7 +1950,10 @@ class Game:
         dim.fill((*OVERLAY_DARK, 180))
         surf.blit(dim, (0, 0))
         draw_card(surf, PAUSE_POPUP_RECT, radius=RADIUS_PANEL)
-        draw_text(surf, self.fonts["title_bold"], "PAUSED", PRIMARY, center=(PAUSE_POPUP_RECT.centerx, PAUSE_POPUP_RECT.top + 64))
+        draw_text(surf, self.fonts["title_bold"], "PAUSED", PRIMARY, center=(PAUSE_POPUP_RECT.centerx, PAUSE_POPUP_RECT.top + 56))
+        pygame.draw.line(surf, LINE, (PAUSE_POPUP_RECT.left + 36, PAUSE_POPUP_RECT.top + 92),
+                         (PAUSE_POPUP_RECT.right - 36, PAUSE_POPUP_RECT.top + 92), 1)
+        self._draw_volume_sliders(surf, PAUSE_ROW_RECTS, PAUSE_SLIDER_RECTS)
 
     def _draw_intro(self, surf: pygame.Surface) -> None:
         move = max(0.0, min(1.0, (self.intro_t - INTRO_HOLD_SECONDS) / INTRO_MOVE_SECONDS))
@@ -2344,6 +2384,20 @@ class Game:
 
         surf.blit(image, (round(x_offset), 150 - image.get_height() // 2))
 
+    def _draw_announce_banner(self, surf: pygame.Surface) -> None:
+        image = self._banner_surface(self.announce_text, ANNOUNCE_COLOR)
+        elapsed = ANNOUNCE_SECONDS - self.announce_timer
+        if elapsed < FEEDBACK_ENTER_SECONDS:
+            u = elapsed / FEEDBACK_ENTER_SECONDS - 1
+            settle = 1 + 1.18 * u ** 3 + 0.18 * u ** 2
+            x_offset = -image.get_width() + (image.get_width() - 24) * settle
+        elif elapsed > ANNOUNCE_SECONDS - FEEDBACK_EXIT_SECONDS:
+            t = (elapsed - (ANNOUNCE_SECONDS - FEEDBACK_EXIT_SECONDS)) / FEEDBACK_EXIT_SECONDS
+            x_offset = -24 + (VIRTUAL_W + 24) * t ** 3
+        else:
+            x_offset = -24
+        surf.blit(image, (round(x_offset), 150 - image.get_height() // 2))
+
     def _banner_surface(
         self, text: str, background: tuple[int, int, int]
     ) -> pygame.Surface:
@@ -2360,6 +2414,8 @@ class Game:
 
             if background == CORRECT_COLOR:
                 edge, highlight, shade, accent = (30, 96, 59), (134, 190, 145), (23, 77, 48), (78, 153, 104)
+            elif background == ANNOUNCE_COLOR:
+                edge, highlight, shade, accent = (168, 98, 24), (248, 202, 122), (132, 74, 16), (238, 172, 76)
             else:
                 edge, highlight, shade, accent = (164, 47, 42), (237, 141, 106), (121, 39, 31), (218, 101, 83)
 
@@ -2379,6 +2435,11 @@ class Game:
                 )
 
             label = self.banner_font.render(text, True, (255, 246, 229))
+            max_w = width - 320
+            if label.get_width() > max_w:
+                label = pygame.transform.smoothscale(
+                    label, (max_w, round(label.get_height() * max_w / label.get_width()))
+                )
             image.blit(label, label.get_rect(center=(width // 2, height // 2)))
             self.banner_cache[key] = image
         return self.banner_cache[key]
@@ -2697,8 +2758,19 @@ class Game:
         draw_text(surf, self.fonts["title_bold"], "Settings", INK, center=(paper.centerx, paper.top + 150))
         pygame.draw.line(surf, LINE, (paper.left + 36, paper.top + 176), (paper.right - 36, paper.top + 176), 1)
 
+        self._draw_volume_sliders(surf, SETTINGS_ROW_RECTS, SETTINGS_SLIDER_RECTS)
+
+        self._draw_dev_controls(surf)
+
+        if self.show_reset_confirm:
+            warn_rect = pygame.Rect(paper.left + 32, SETTINGS_RESET_RECT.top - 46, paper.width - 64, 38)
+            draw_rounded_rect(surf, warn_rect, (253, 237, 237), radius=8, border=DANGER, border_width=1)
+            draw_icon(surf, "alert", (warn_rect.left + 20, warn_rect.centery), 18, DANGER)
+            draw_text(surf, self.fonts["paper"], "Reset all progress & cards?", DANGER, midleft=(warn_rect.left + 36, warn_rect.centery))
+
+    def _draw_volume_sliders(self, surf: pygame.Surface, row_rects, slider_rects) -> None:
         rows = (("Music Volume", self.audio.music_volume), ("Sound Effects", self.audio.sfx_volume))
-        for rect, track, (text, volume) in zip(SETTINGS_ROW_RECTS, SETTINGS_SLIDER_RECTS, rows):
+        for rect, track, (text, volume) in zip(row_rects, slider_rects, rows):
             draw_text(surf, self.fonts["body_bold"], text, INK, topleft=(rect.left, rect.top - 6))
             pct_txt = f"{round(volume * 100)}%"
             draw_text(surf, self.fonts["body"], pct_txt, PRIMARY, topright=(rect.right, rect.top - 6))
@@ -2717,14 +2789,6 @@ class Game:
             pygame.draw.circle(surf, (255, 255, 255), knob, 10)
             pygame.draw.circle(surf, PRIMARY, knob, 10, 2)
             pygame.draw.circle(surf, PRIMARY, knob, 4)
-
-        self._draw_dev_controls(surf)
-
-        if self.show_reset_confirm:
-            warn_rect = pygame.Rect(paper.left + 32, SETTINGS_RESET_RECT.top - 46, paper.width - 64, 38)
-            draw_rounded_rect(surf, warn_rect, (253, 237, 237), radius=8, border=DANGER, border_width=1)
-            draw_icon(surf, "alert", (warn_rect.left + 20, warn_rect.centery), 18, DANGER)
-            draw_text(surf, self.fonts["paper"], "Reset all progress & cards?", DANGER, midleft=(warn_rect.left + 36, warn_rect.centery))
 
     def _draw_dev_controls(self, surf: pygame.Surface) -> None:
         box = DEV_INPUT_RECT
