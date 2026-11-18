@@ -160,6 +160,25 @@ class GameSmokeTests(unittest.TestCase):
         self.assertEqual(self.game.phase, "ROUND")
         self.assertEqual(self.game.enemy_health, 2)
 
+    def test_warmup_spares_the_opponent_from_level_three(self):
+        self.game.progress.completed_levels.update({1, 2})
+        self.game.progress.dictionary_ids.update({1, 2, 3, 4, 5, 6})
+        self.game._open_level_select()
+        self.game._select_level(3)
+        for _ in range(3):
+            self.game.on_add_to_dictionary()
+        self.game._start_warmup()
+        for _ in range(3):
+            self.assertEqual(self.game.phase, "WARMUP")
+            self.game.resolve_answer(True, timeout=False)
+            self.game.after_feedback()
+        self.assertEqual(self.game.phase, "ROUND")
+        self.assertEqual(self.game.enemy_health, self.main.game_rules.OPPONENT_HEALTH_MAX)
+
+        self.game.resolve_answer(True, timeout=False)
+        self.game.after_feedback()
+        self.assertEqual(self.game.enemy_health, self.main.game_rules.OPPONENT_HEALTH_MAX - 1)
+
     def test_official_round_damages_both_sides_without_healing(self):
         self._start_level_one_round()
         for _ in range(3):

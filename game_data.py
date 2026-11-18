@@ -2,7 +2,7 @@
 
 Fallacy ids are 1-18 and match the introduction order in SPEC.md. The
 numbered card files run in the opposite order (#18 and DictionaryCard18
-are fallacy 1). Book pages use the curved DictionaryCard images. Clicking
+are fallacy 1). Book pages draw flat cards from these definitions. Clicking
 one enlarges `Dictionary Card/#`, and a wrong answer pops that same card
 without collecting it. Every two rounds, `Add cards/#` is the lesson.
 """

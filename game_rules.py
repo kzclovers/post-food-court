@@ -13,6 +13,9 @@ from dataclasses import dataclass, field
 
 HEALTH_MAX = 6
 OPPONENT_HEALTH_MAX = 5  # main levels: each correct answer removes one
+# From this level on, warm-up answers no longer bite the opponent's carrot;
+# only the official round does.
+WARMUP_NO_DAMAGE_FROM_LEVEL = 3
 MASTERY_TARGET = 3  # correct answers needed to master a fallacy
 QUESTION_SECONDS = 10.0
 FEEDBACK_HOLD_SECONDS = 2.0
