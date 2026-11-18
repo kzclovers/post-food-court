@@ -78,13 +78,23 @@ DIALOGUE_MOVE_SECONDS = 1.0
 PAGE_TURN_SECONDS = 0.65
 CARDS_PER_SPREAD = 4  # two dictionary cards on each page of the open book
 
-# Open-book art (`Untitled_Artwork 9.png`) uses a 3300x2550 canvas. These
-# rects are in source-image pixels: the crop contains the full book and the
-# page areas leave room for the rings and page edges.
-BOOK_CROP = pygame.Rect(108, 0, 3084, 2550)
-LEFT_PAGE_SRC = pygame.Rect(264, 684, 1252, 1680)
-RIGHT_PAGE_SRC = pygame.Rect(1789, 684, 1230, 1680)
-BOOK_MAX = (1080, 690)
+# Procedural open recipe book for the dictionary, styled like the dictionary
+# icon: golden cover, cream pages, thin dark-brown outlines. Everything is in
+# book-local pixels; the pages and rings are separate layers so page turns can
+# redraw them over the static cover, tabs and tucked-in papers.
+BOOK_SIZE = (1040, 650)
+BOOK_COVER = pygame.Rect(30, 22, 980, 612)
+BOOK_PAGES = (pygame.Rect(52, 38, 452, 580), pygame.Rect(536, 38, 452, 580))
+# Card areas on each page, clear of the spiral rings.
+BOOK_LEFT_CARDS = pygame.Rect(80, 60, 388, 536)
+BOOK_RIGHT_CARDS = pygame.Rect(572, 60, 388, 536)
+BOOK_OUTLINE = (52, 32, 22)
+BOOK_GOLD = (244, 186, 52)
+BOOK_GOLD_DARK = (206, 146, 34)
+BOOK_PAGE = (252, 247, 234)
+BOOK_PAGE_EDGE = (234, 222, 198)
+BOOK_RULE = (234, 224, 206)
+BOOK_TAB_COLORS = ((210, 88, 52), (88, 146, 96), (96, 140, 186), (236, 150, 170))
 
 # The kitchen art is 4:3, so it is cover-scaled to 16:9 and cropped from the
 # top (the bottom edge stays put). These anchors are in that cropped space:
@@ -610,12 +620,189 @@ def smoothstep(t: float) -> float:
     return t * t * (3 - 2 * t)
 
 
-def book_display_size() -> tuple[int, int]:
-    scale = min(BOOK_MAX[0] / BOOK_CROP.width, BOOK_MAX[1] / BOOK_CROP.height)
-    return (
-        max(1, int(BOOK_CROP.width * scale)),
-        max(1, int(BOOK_CROP.height * scale)),
-    )
+def build_recipe_book() -> tuple[pygame.Surface, pygame.Surface, pygame.Surface]:
+    """Return (base, pages, rings) layers of the open recipe book."""
+    ss = 2  # draw at double size, then smooth-scale down for clean edges
+    width, height = BOOK_SIZE
+
+    def R(rect) -> pygame.Rect:
+        rect = pygame.Rect(rect)
+        return pygame.Rect(rect.x * ss, rect.y * ss, rect.w * ss, rect.h * ss)
+
+    def P(x, y) -> tuple[int, int]:
+        return (round(x * ss), round(y * ss))
+
+    def box(surf, rect, fill, radius=0, outline=BOOK_OUTLINE, line=3, **corners):
+        pygame.draw.rect(surf, fill, R(rect), border_radius=radius * ss, **{k: v * ss for k, v in corners.items()})
+        if outline is not None:
+            pygame.draw.rect(surf, outline, R(rect), line * ss, border_radius=radius * ss,
+                             **{k: v * ss for k, v in corners.items()})
+
+    def layer() -> pygame.Surface:
+        return pygame.Surface((width * ss, height * ss), pygame.SRCALPHA)
+
+    def tucked_paper(surf, size, fill, angle, side, along, lines=0, line_color=BOOK_RULE, tape=None):
+        """Tuck a paper under the pages so only a sliver shows past the cover's `side` edge."""
+        w, h = size
+        paper = pygame.Surface((w * ss, h * ss), pygame.SRCALPHA)
+        box(paper, (0, 0, w, h), fill, radius=4)
+        for i in range(lines):
+            y = 18 + i * 14
+            if y > h - 10:
+                break
+            pygame.draw.line(paper, line_color, P(10, y), P(w - 10, y), 2 * ss)
+        if tape is not None:
+            pygame.draw.rect(paper, tape, R((w // 2 - 22, 4, 44, 12)))
+        rotated = pygame.transform.rotate(paper, angle)
+        rect = rotated.get_rect()
+        peek = 12  # how far the paper's outermost corner shows past the cover
+        if side == "top":
+            rect.midtop = P(along, BOOK_COVER.top - peek)
+        elif side == "bottom":
+            rect.midbottom = P(along, BOOK_COVER.bottom + peek)
+        elif side == "left":
+            rect.midleft = P(BOOK_COVER.left - peek, along)
+        else:
+            rect.midright = P(BOOK_COVER.right + peek, along)
+        surf.blit(rotated, rect)
+
+    def stain(surf, center, radius, alpha):
+        ring = pygame.Surface((radius * 2 * ss + 4, radius * 2 * ss + 4), pygame.SRCALPHA)
+        c = (radius * ss + 2, radius * ss + 2)
+        pygame.draw.circle(ring, (196, 150, 96, alpha // 3), c, radius * ss)
+        pygame.draw.circle(ring, (170, 120, 70, alpha), c, radius * ss, 3 * ss)
+        surf.blit(ring, (center[0] * ss - c[0], center[1] * ss - c[1]))
+
+    # --- base: cover, tabs, papers tucked between the pages, page stacks ---
+    base = layer()
+    mid = width // 2
+    cover = BOOK_COVER
+    # Ribbon bookmark hanging out of the bottom of the spine.
+    ribbon = [P(mid + 30, cover.bottom - 40), P(mid + 52, cover.bottom - 40),
+              P(mid + 54, height - 2), P(mid + 43, height - 12), P(mid + 32, height - 2)]
+    pygame.draw.polygon(base, (196, 64, 52), ribbon)
+    pygame.draw.polygon(base, BOOK_OUTLINE, ribbon, 3 * ss)
+
+    box(base, cover, BOOK_GOLD, radius=18)
+    box(base, (cover.left + 10, cover.top + 8, cover.width - 20, cover.height - 16), BOOK_GOLD,
+        radius=12, outline=BOOK_GOLD_DARK, line=2)
+    box(base, (mid - 22, cover.top, 44, cover.height), BOOK_GOLD_DARK, radius=0, line=3)
+
+    # Index tabs poke past the right page edge; two more on the left.
+    for i, top in enumerate((74, 168, 262, 372)):
+        tab = pygame.Rect(BOOK_PAGES[1].right - 40, top, 82, 62)
+        box(base, tab, BOOK_TAB_COLORS[i], radius=10)
+        pygame.draw.line(base, (255, 248, 238), P(tab.right - 30, tab.top + 22), P(tab.right - 12, tab.top + 22), 3 * ss)
+        pygame.draw.line(base, (255, 248, 238), P(tab.right - 30, tab.top + 34), P(tab.right - 16, tab.top + 34), 3 * ss)
+    for i, top in enumerate((300, 420)):
+        tab = pygame.Rect(4, top, 82, 58)
+        box(base, tab, BOOK_TAB_COLORS[(i + 2) % 4], radius=10)
+        pygame.draw.line(base, (255, 248, 238), P(tab.left + 14, tab.top + 22), P(tab.left + 32, tab.top + 22), 3 * ss)
+
+    # Loose recipe cards, a sticky note and a torn scrap tucked between pages.
+    tucked_paper(base, (150, 110), (255, 252, 242), -4, "top", 720, lines=6, line_color=(176, 206, 226))
+    tucked_paper(base, (96, 96), (255, 226, 112), 5, "top", 208, lines=4, line_color=(232, 196, 84))
+    tucked_paper(base, (170, 120), (246, 238, 220), 3, "bottom", 842, lines=6)
+    tucked_paper(base, (92, 130), (250, 240, 226), -4, "left", 560, lines=6, tape=(226, 214, 186))
+    tucked_paper(base, (84, 110), (214, 236, 214), 5, "right", 560, lines=5, line_color=(170, 206, 170))
+
+    # A few sheets under each top page show the book is full.
+    for page, out in zip(BOOK_PAGES, (-1, 1)):
+        for step in (3, 2, 1):
+            sheet = page.move(out * step * 3, step * 3)
+            box(base, sheet, BOOK_PAGE_EDGE, radius=6, line=2)
+
+    # --- pages: the two top sheets, with kitchen wear ---
+    pages = layer()
+    for page in BOOK_PAGES:
+        box(pages, page, BOOK_PAGE, radius=6)
+        for y in range(page.top + 46, page.bottom - 20, 30):
+            pygame.draw.line(pages, BOOK_RULE, P(page.left + 18, y), P(page.right - 18, y), 2 * ss)
+    stain(pages, (128, 560), 34, 70)
+    stain(pages, (146, 584), 18, 50)
+    stain(pages, (930, 86), 26, 55)
+    pygame.draw.ellipse(pages, (214, 186, 140, 60), R((600, 520, 54, 30)))
+    # Dog-eared bottom corner on the right page.
+    right = BOOK_PAGES[1]
+    fold = 34
+    pygame.draw.polygon(pages, (0, 0, 0, 0), [P(right.right + 1, right.bottom - fold), P(right.right + 1, right.bottom + 1),
+                                              P(right.right - fold, right.bottom + 1)])
+    corner = [P(right.right, right.bottom - fold), P(right.right - fold, right.bottom - fold), P(right.right - fold, right.bottom)]
+    pygame.draw.polygon(pages, BOOK_PAGE_EDGE, corner)
+    pygame.draw.polygon(pages, BOOK_OUTLINE, corner, 2 * ss)
+    pygame.draw.line(pages, BOOK_OUTLINE, P(right.right, right.bottom - fold), P(right.right - fold, right.bottom), 3 * ss)
+
+    hole_ys = list(range(70, 600, 50))
+
+    # --- rings: metal coils looping over the gutter between the holes ---
+    rings = layer()
+    left_x, right_x = BOOK_PAGES[0].right - 16, BOOK_PAGES[1].left + 16
+    rx = (right_x - left_x) / 2
+    for y in hole_ys:
+        pts = [
+            ((left_x + right_x) / 2 - rx * math.cos(a), y - 14 * math.sin(a))
+            for a in (math.pi * i / 40 for i in range(41))
+        ]
+        for color, r, dy in ((BOOK_OUTLINE, 5.5, 0), ((132, 130, 138), 3.5, 0), ((214, 214, 220), 1.4, -1.5)):
+            for x, py in pts:
+                pygame.draw.circle(rings, color, P(x, py + dy), r * ss)
+
+    return tuple(pygame.transform.smoothscale(s, BOOK_SIZE) for s in (base, pages, rings))
+
+
+# Flat recipe cards for the dictionary book. The paper texture and brain icon
+# are cropped from the flat interior of a DictionaryCard image so the cards
+# keep the art's look; only the curved outline is gone.
+BOOK_CARD_SIZE = (780, 520)
+BOOK_CARD_TEXTURE_SRC = pygame.Rect(90, 570, 790, 120)
+BOOK_CARD_ICON_SRC = pygame.Rect(140, 382, 64, 60)
+BOOK_CARD_INK = (92, 58, 44)
+
+
+def build_book_card(fallacy, source: pygame.Surface, title_font: pygame.font.Font,
+                    body_font: pygame.font.Font) -> pygame.Surface:
+    """Draw one rectangular dictionary card for `fallacy`."""
+    width, height = BOOK_CARD_SIZE
+    card = pygame.Surface(BOOK_CARD_SIZE, pygame.SRCALPHA)
+    bounds = source.get_rect()
+    texture_src = BOOK_CARD_TEXTURE_SRC.clip(bounds)
+    if texture_src.width > 0 and texture_src.height > 0:
+        strip = pygame.transform.smoothscale(
+            source.subsurface(texture_src), (width, round(texture_src.height * width / texture_src.width))
+        )
+        for y in range(0, height, strip.get_height()):
+            card.blit(strip, (0, y))
+    else:
+        card.fill((238, 234, 224))
+    # Clip to rounded corners, then frame it like the original card.
+    mask = pygame.Surface(BOOK_CARD_SIZE, pygame.SRCALPHA)
+    pygame.draw.rect(mask, (255, 255, 255, 255), mask.get_rect(), border_radius=14)
+    card.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
+    pygame.draw.rect(card, (150, 120, 96), card.get_rect(), 3, border_radius=14)
+    pygame.draw.rect(card, BOOK_CARD_INK, card.get_rect().inflate(-44, -44), 2, border_radius=4)
+
+    text_left = 120
+    text_w = width - text_left - 60
+    title_lines = wrap_text(fallacy.name, title_font, text_w)
+    if fallacy.alt_name:
+        title_lines += wrap_text(f"({fallacy.alt_name})", title_font, text_w)
+    body_lines = wrap_text(fallacy.definition, body_font, width - 2 * 70)
+    title_h = title_font.get_linesize()
+    body_h = body_font.get_linesize()
+    block_h = len(title_lines) * title_h + 28 + len(body_lines) * body_h
+    y = (height - block_h) // 2
+    icon_src = BOOK_CARD_ICON_SRC.clip(bounds)
+    if icon_src.width > 0 and icon_src.height > 0:
+        icon = source.subsurface(icon_src)
+        card.blit(icon, icon.get_rect(center=(text_left - 44, y + len(title_lines) * title_h // 2)))
+    for line in title_lines:
+        card.blit(title_font.render(line, True, BOOK_CARD_INK), (text_left, y))
+        y += title_h
+    y += 28
+    for line in body_lines:
+        card.blit(body_font.render(line, True, BOOK_CARD_INK), (70, y))
+        y += body_h
+    return card
 
 
 def lerp_rect(a: pygame.Rect, b: pygame.Rect, t: float) -> pygame.Rect:
@@ -1132,24 +1319,28 @@ class Game:
             enemy: load_image(name, (150, 150), (0, 0, 0, 0)) for enemy, name in LEVEL_STAMPS.items()
         }
         self.dictionary_icon = load_image("dictionary icon.PNG", (48, 64), (214, 122, 54))
-        book = load_image("Untitled_Artwork 9.png", BOOK_CROP.size, (255, 247, 206))
-        if book.get_width() >= BOOK_CROP.right and book.get_height() >= BOOK_CROP.bottom:
-            book = book.subsurface(BOOK_CROP).copy()
-        self.book_image = pygame.transform.smoothscale(book, book_display_size())
-        width, height = self.book_image.get_size()
-        gutter = max(10, width // 24)
+        base, pages, rings = build_recipe_book()
+        self.book_base = rle(base)
+        self.book_stitch = rle(rings)
+        width, height = BOOK_SIZE
         mid = width // 2
+        gutter = (BOOK_PAGES[1].left - BOOK_PAGES[0].right) // 2
         self.page_gutter = gutter
         self.page_halves = (
-            self.book_image.subsurface(pygame.Rect(0, 0, mid - gutter, height)).copy(),
-            self.book_image.subsurface(pygame.Rect(mid + gutter, 0, width - mid - gutter, height)).copy(),
+            pages.subsurface(pygame.Rect(0, 0, mid - gutter, height)).copy(),
+            pages.subsurface(pygame.Rect(mid + gutter, 0, width - mid - gutter, height)).copy(),
         )
-        self.book_stitch = self.book_image.subsurface(
-            pygame.Rect(mid - gutter, 0, gutter * 2, height)
-        ).copy()
+        self.book_image = base.copy()
+        self.book_image.blit(pages, (0, 0))
+        self.book_image.blit(rings, (0, 0))
+        rle(self.book_image)
         # Numbered files run backwards: #18 / DictionaryCard18 is fallacy 1.
+        card_art = load_image("DictionaryCard18.png", (975, 831), CARD_WHITE)
+        font_dir = ASSET_DIR / "Nunito" / "static"
+        card_title_font = pygame.font.Font(str(font_dir / "Nunito-Bold.ttf"), 54)
+        card_body_font = pygame.font.Font(str(font_dir / "Nunito-Regular.ttf"), 34)
         self.dictionary_cards = {
-            fid: load_image(f"DictionaryCard{19 - fid:02d}.png", (480, 390), CARD_WHITE)
+            fid: build_book_card(FALLACIES_BY_ID[fid], card_art, card_title_font, card_body_font)
             for fid in range(1, 19)
         }
         self.detail_cards = {
@@ -1498,11 +1689,13 @@ class Game:
             elif warmup:
                 if self.warmup_queue and self.warmup_queue[0] == fid:
                     self.warmup_queue.pop(0)
-                self.enemy_health = max(0, self.enemy_health - 1)
+                if self.level < game_rules.WARMUP_NO_DAMAGE_FROM_LEVEL:
+                    self.enemy_health = max(0, self.enemy_health - 1)
             else:
                 self.enemy_health = max(0, self.enemy_health - 1)
             self.enemy_losses += 1
-            self.enemy_flash = FLASH_DURATION
+            if not warmup or self.level < game_rules.WARMUP_NO_DAMAGE_FROM_LEVEL:
+                self.enemy_flash = FLASH_DURATION
             self.result_label = "CORRECT"
             self.review_fallacy_id = None
             self.audio.play_sfx("correct")
@@ -2307,28 +2500,33 @@ class Game:
         pygame.draw.line(surf, LINE, (panel.left + 40, panel.top + 78), (panel.right - 40, panel.top + 78), 2)
 
         steps = [
-            ("1. Learn New Fallacies", "Each level introduces three new fallacies. Add them to your dictionary to use as reference during the trial."),
-            ("2. Warm-Up Round", "Practice identifying the new fallacies with no timer and no health damage."),
-            ("3. Official Kitchen Trial", "Read the opponent's argument and click the ingredient with the corresponding fallacy before the timer expires!"),
-            ("4. Win the Trail", "Correct answers damage the opponent; wrong answers or running out of time damage you. Complete the first level to unlock Infinite Mode!"),
+            ("Learn New Fallacies", "Each level introduces three new fallacies. Add them to your dictionary to use as reference during the trial."),
+            ("Warm-Up Round", "Practice identifying the new fallacies with no timer and no health damage."),
+            ("Official Kitchen Trial", "Read the opponent's argument and click the ingredient with the corresponding fallacy before the timer expires!"),
+            ("Win the Trial", "Correct answers damage the opponent; wrong answers or running out of time damage you. Complete the first level to unlock Infinite Mode!"),
         ]
 
-        chip_h, desc_gap, line_h = 45, 12, 30
-        wrapped_steps = [wrap_text(desc, self.fonts["body"], panel.width - 120) for _title, desc in steps]
-        heights = [chip_h + desc_gap + len(w) * line_h for w in wrapped_steps]
+        # Each step is a numbered badge with its title and description beside it.
+        badge_r, title_h, line_h = 22, 38, 30
+        text_left = panel.left + 64 + badge_r * 2 + 20
+        text_w = panel.right - 56 - text_left
+        wrapped_steps = [wrap_text(desc, self.fonts["small"], text_w) for _title, desc in steps]
+        heights = [title_h + len(w) * line_h for w in wrapped_steps]
         # Spread the steps evenly over the space below the title rule.
-        top, bottom = panel.top + 100, panel.bottom - 30
+        top, bottom = panel.top + 104, panel.bottom - 36
         gap = max(16, (bottom - top - sum(heights)) / max(1, len(steps) - 1))
         y = top
-        for (title, _desc), wrapped, height in zip(steps, wrapped_steps, heights):
-            # Bullet badge
-            chip_rect = pygame.Rect(panel.left + 48, round(y), 420, chip_h)
-            draw_rounded_rect(surf, chip_rect, SURFACE_ALT, radius=6, border=LINE, border_width=1)
-            draw_text(surf, self.fonts["body_bold"], title, PRIMARY, midleft=(chip_rect.left + 12, chip_rect.centery))
-
+        for i, ((title, _desc), wrapped, height) in enumerate(zip(steps, wrapped_steps, heights), start=1):
+            badge_center = (panel.left + 64 + badge_r, round(y) + title_h // 2)
+            draw_smooth_circle(surf, PRIMARY, badge_center, badge_r, border=PRIMARY_DARK, border_width=2)
+            draw_text(surf, self.fonts["body_bold"], str(i), TEXT_ON_DARK, center=badge_center)
+            draw_text(surf, self.fonts["body_bold"], title, PRIMARY, midleft=(text_left, badge_center[1]))
             for j, line in enumerate(wrapped):
-                draw_text(surf, self.fonts["body"], line, INK, topleft=(panel.left + 52, chip_rect.bottom + desc_gap + j * line_h))
+                draw_text(surf, self.fonts["small"], line, INK, topleft=(text_left, round(y) + title_h + j * line_h))
             y += height + gap
+            if i < len(steps):
+                rule_y = round(y - gap / 2)
+                pygame.draw.line(surf, LINE, (text_left, rule_y), (panel.right - 56, rule_y), 1)
 
     def _draw_level_select(self, surf: pygame.Surface) -> None:
         # Title
@@ -2853,20 +3051,9 @@ class Game:
             y += box_h + 8
 
     def _book_geometry(self) -> tuple[tuple[int, int], pygame.Rect, pygame.Rect]:
-        bw, bh = self.book_image.get_size()
+        bw, bh = BOOK_SIZE
         origin = ((VIRTUAL_W - bw) // 2, (VIRTUAL_H - bh) // 2 - 16)
-        scale_x = bw / BOOK_CROP.width
-        scale_y = bh / BOOK_CROP.height
-
-        def map_rect(src: pygame.Rect) -> pygame.Rect:
-            return pygame.Rect(
-                origin[0] + round((src.left - BOOK_CROP.left) * scale_x),
-                origin[1] + round((src.top - BOOK_CROP.top) * scale_y),
-                max(1, round(src.width * scale_x)),
-                max(1, round(src.height * scale_y)),
-            )
-
-        return origin, map_rect(LEFT_PAGE_SRC), map_rect(RIGHT_PAGE_SRC)
+        return origin, BOOK_LEFT_CARDS.move(origin), BOOK_RIGHT_CARDS.move(origin)
 
     def _half_rects(self, origin: tuple[int, int]) -> tuple[pygame.Rect, pygame.Rect]:
         width, height = self.book_image.get_size()
@@ -2954,8 +3141,10 @@ class Game:
         scaled = pygame.transform.smoothscale(image, (new_w, rect.height))
         x = rect.left if hinge == "left" else rect.right - new_w
         surf.blit(scaled, (x, rect.top))
+        # Shade only the page itself, not the transparent margin around it.
         shade = pygame.Surface((new_w, rect.height), pygame.SRCALPHA)
         shade.fill((48, 28, 12, int(110 * (1 - scale))))
+        shade.blit(scaled, (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
         surf.blit(shade, (x, rect.top))
 
     def _draw_spread(self, surf: pygame.Surface, spread: int, left_rect: pygame.Rect, right_rect: pygame.Rect) -> None:
@@ -2964,8 +3153,7 @@ class Game:
         surf.blit(self._compose_page(ids[2:4], right_rect.size), right_rect)
 
     def _draw_stitch(self, surf: pygame.Surface, origin: tuple[int, int]) -> None:
-        mid = self.book_image.get_width() // 2
-        surf.blit(self.book_stitch, (origin[0] + mid - self.page_gutter, origin[1]))
+        surf.blit(self.book_stitch, origin)
 
     def _draw_page_turn(self, surf: pygame.Surface, left_rect: pygame.Rect, right_rect: pygame.Rect) -> None:
         origin, _, _ = self._book_geometry()
@@ -3000,13 +3188,13 @@ class Game:
     def _draw_dictionary(self, surf: pygame.Surface) -> None:
         origin, left_rect, right_rect = self._book_geometry()
         turning = self.page_anim is not None
-        if not turning:
-            surf.blit(self.book_image, origin)
+        # Page turns redraw the pages and rings over the bare cover.
+        surf.blit(self.book_base if turning else self.book_image, origin)
 
         entries = self._dictionary_entries()
         if not entries:
             empty = self.fonts["body"].render("No fallacies collected yet.", True, TEXT_DARK)
-            surf.blit(empty, empty.get_rect(center=self.book_image.get_rect(topleft=origin).center))
+            surf.blit(empty, empty.get_rect(center=left_rect.center))
             return
 
         spreads = self._spread_count()
